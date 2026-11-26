@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars for local plans. This file contains no secrets.
+aws_region   = "eu-west-1"
+environment  = "dev"
+project_name = "terraform-cloud-project"
+owner        = "drghassen"
+vpc_cidr     = "10.20.0.0/16"
+
+# One NAT Gateway reduces DEV cost; private app subnets share its egress.
+nat_gateway_count = 1
+
+# HTTP uses the ALB's AWS DNS name and needs no custom domain or certificate.
+enable_https = false

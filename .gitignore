@@ -1,0 +1,61 @@
+
+# Terraform local files
+**/.terraform/
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+
+# Terraform plans
+*.tfplan
+tfplan
+plan.txt
+environments/*/tfplan-review-*
+
+# Terraform variable files (may contain secrets)
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Local backups
+.terraform.lock.hcl.bak
+
+# AWS local credentials
+.aws/
+credentials
+config.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node.js
+node_modules/
+dist/
+**/.vite/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+coverage/
+build/

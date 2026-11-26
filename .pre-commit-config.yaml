@@ -1,0 +1,34 @@
+repos:
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.109.3
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+        args:
+          - --hook-config=--parallelism-limit=1
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+          - --args=--minimum-failure-severity=error
+      - id: terraform_docs
+        args:
+          - --args=--config=.terraform-docs.yml
+          - --hook-config=--add-to-existing-file=true
+          - --hook-config=--create-file-if-not-exist=true
+  - repo: local
+    hooks:
+      - id: checkov
+        name: Checkov
+        entry: checkov -d .
+        language: python
+        additional_dependencies:
+          - checkov==3.4.11
+        pass_filenames: false
+        files: \.tf$
+      - id: gitleaks
+        name: Gitleaks (full directory)
+        entry: gitleaks dir --redact --no-banner .
+        language: system
+        pass_filenames: false
+        always_run: true
+        exclude: ^(\.terraform/|.*/\.terraform/)

@@ -30,6 +30,8 @@ access uses AWS Systems Manager rather than inbound SSH.
 bootstrap/                  S3 remote-state bucket
 bootstrap/github-terraform-dev-plan/
                             Read-only OIDC role for DEV plans
+bootstrap/github-terraform-dev-apply/
+                            Scoped OIDC role for explicit DEV applies
 modules/
   network/                  VPC, subnets, gateways, and routes
   security/                 Security groups and EC2 instance role
@@ -50,7 +52,7 @@ scripts/                    Local validation and backend initialization
 - AWS CLI v2 and an authorized AWS identity (prefer AWS IAM Identity Center)
 - AWS region `eu-west-1`
 - Access to the approved state bucket:
-  `cloud5-terraform-stockyard-drghassen-state-326553917564`
+  `cloud5-terraform-drghassen-state-326553917564`
 
 Terraform state is stored in this bucket at:
 
@@ -69,7 +71,7 @@ Initialize DEV's remote backend from PowerShell:
 ```powershell
 .\scripts\init-env.ps1 `
   -Environment dev `
-  -Bucket "cloud5-terraform-stockyard-drghassen-state-326553917564" `
+  -Bucket "cloud5-terraform-drghassen-state-326553917564" `
   -BackendRegion "eu-west-1"
 ```
 
@@ -85,8 +87,15 @@ The first deployment creates cost-bearing resources. Do not apply until the
 complete plan, AWS account, region, resource names, and estimated costs have
 been reviewed and explicitly approved. The GitHub workflow supports manual
 plan-only runs on `main`; applying requires a separately provisioned,
-reviewed DEV OIDC role and required reviewers on the protected GitHub `dev`
-environment. See [CI/CD guidance](docs/dev-release-pipeline.md).
+reviewed DEV OIDC role. The GitHub `dev` environment currently has no required
+reviewer; configure one before using this for sensitive workloads. See
+[CI/CD guidance](docs/dev-release-pipeline.md).
+
+DEV, TEST, and PROD use HTTP with the ALB's AWS-provided DNS name, so no
+custom domain or ACM certificate is required. HTTP is unencrypted; do not send
+credentials or sensitive data through these demo endpoints. HTTPS can be
+enabled later by setting `enable_https = true` and providing an issued ACM
+certificate ARN in `eu-west-1`.
 
 ## Validation
 
@@ -96,10 +105,11 @@ Run local checks:
 .\scripts\check.ps1
 ```
 
-The workflow runs `terraform fmt`, initializes and validates each root, runs
-module tests without AWS changes, and creates a read-only DEV plan for pull
-requests or manual runs from `main`. A manual run is plan-only by default;
-applying requires an explicit input and protected environment approval.
+The workflow runs `terraform fmt`, initializes and validates each root, and
+runs module tests without AWS changes. Pull requests run only these static
+checks and scans; a read-only DEV plan is available only through manual
+dispatch from `main`. A manual run is plan-only by default; applying requires
+an explicit input and protected environment approval.
 
 ## Costs and cleanup
 

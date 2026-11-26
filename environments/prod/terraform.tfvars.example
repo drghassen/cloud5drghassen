@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars for local plans. This file contains no secrets.
+aws_region   = "eu-west-1"
+environment  = "prod"
+project_name = "terraform-cloud-project"
+owner        = "drghassen"
+vpc_cidr     = "10.20.0.0/16"
+
+# HTTP uses the ALB's AWS DNS name and needs no custom domain or certificate.
+enable_https = false
+# acm_certificate_arn = "arn:aws:acm:eu-west-1:123456789012:certificate/..."
