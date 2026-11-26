@@ -107,6 +107,7 @@ resource "aws_iam_role_policy" "this" {
           "autoscaling:DescribeTags",
           "ec2:DescribeAccountAttributes",
           "ec2:DescribeAddresses",
+          "ec2:DescribeAddressesAttribute",
           "ec2:DescribeAvailabilityZones",
           "ec2:DescribeImages",
           "ec2:DescribeInstanceTypes",
@@ -117,6 +118,7 @@ resource "aws_iam_role_policy" "this" {
           "ec2:DescribeNatGateways",
           "ec2:DescribeNetworkInterfaces",
           "ec2:DescribeRouteTables",
+          "ec2:DescribeSecurityGroupRules",
           "ec2:DescribeSecurityGroups",
           "ec2:DescribeSubnets",
           "ec2:DescribeTags",
@@ -164,7 +166,7 @@ resource "aws_iam_role_policy" "this" {
       {
         Sid      = "ReadApplicationBucketConfiguration"
         Effect   = "Allow"
-        Action   = ["s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:ListBucket"]
+        Action   = ["s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:ListBucket"]
         Resource = local.storage_bucket_arn
       },
       {
@@ -193,11 +195,16 @@ resource "aws_iam_role_policy" "this" {
         Sid    = "ManageTaggedEc2Resources"
         Effect = "Allow"
         Action = [
+          "ec2:AssociateRouteTable",
           "ec2:AttachInternetGateway",
           "ec2:AuthorizeSecurityGroupEgress",
           "ec2:AuthorizeSecurityGroupIngress",
           "ec2:CreateLaunchTemplateVersion",
+          "ec2:CreateNatGateway",
           "ec2:CreateRoute",
+          "ec2:CreateRouteTable",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateSubnet",
           "ec2:DeleteInternetGateway",
           "ec2:DeleteLaunchTemplate",
           "ec2:DeleteLaunchTemplateVersions",
@@ -351,6 +358,7 @@ resource "aws_iam_role_policy" "this" {
           "s3:CreateBucket",
           "s3:DeleteBucket",
           "s3:DeleteBucketPolicy",
+          "s3:PutBucketAcl",
           "s3:PutBucketPolicy",
           "s3:PutBucketPublicAccessBlock",
           "s3:PutBucketOwnershipControls",
