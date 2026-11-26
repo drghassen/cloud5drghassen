@@ -151,6 +151,7 @@ resource "aws_iam_role_policy" "this" {
           "s3:GetBucketPublicAccessBlock",
           "s3:GetBucketTagging",
           "s3:GetBucketVersioning",
+          "s3:GetBucketWebsite",
           "s3:GetEncryptionConfiguration",
           "s3:GetLifecycleConfiguration",
           "s3:ListBucket"
