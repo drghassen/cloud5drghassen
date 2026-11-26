@@ -1,7 +1,7 @@
 # GitHub Terraform plan role module
 
 Defines a read-only AWS IAM role for each environment's Terraform plans from
-`main` through GitHub OIDC. Permissions are limited to that environment's
+`main` and Pull Requests through GitHub OIDC. Permissions are limited to that environment's
 Terraform state and lock file plus the AWS metadata reads needed by Terraform.
 The role cannot apply infrastructure, read secret values, or pass IAM roles.
 

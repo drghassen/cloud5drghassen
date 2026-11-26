@@ -40,7 +40,7 @@ module "github_terraform_plan" {
   })
 
   github_environment   = each.value.github_environment
-  github_ref_patterns  = ["refs/heads/main"]
+  github_ref_patterns  = ["refs/heads/main", "refs/pull/*/merge"]
   oidc_provider_arn    = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
   github_owner_id      = var.github_owner_id
   github_repository_id = var.github_repository_id

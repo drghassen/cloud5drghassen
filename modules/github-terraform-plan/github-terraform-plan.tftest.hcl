@@ -1,13 +1,13 @@
 mock_provider "aws" {}
 
-run "role_is_restricted_to_manual_main_plans" {
+run "role_is_restricted_to_main_and_pr_plans" {
   command = plan
 
   variables {
     name_prefix          = "cloud5-infra-dev"
     common_tags          = { Project = "terraform-cloud-project", Environment = "dev", Owner = "drghassen", ManagedBy = "Terraform" }
     github_environment   = "dev-plan"
-    github_ref_patterns  = ["refs/heads/main"]
+    github_ref_patterns  = ["refs/heads/main", "refs/pull/*/merge"]
     oidc_provider_arn    = "arn:aws:iam::326553917564:oidc-provider/token.actions.githubusercontent.com"
     github_owner_id      = "128297499"
     github_repository_id = "1473229803"
@@ -21,18 +21,18 @@ run "role_is_restricted_to_manual_main_plans" {
   assert {
     condition = (
       strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen/cloud5drghassen:environment:dev-plan") &&
-      !strcontains(aws_iam_role.this.assume_role_policy, "refs/pull/*/merge") &&
+      strcontains(aws_iam_role.this.assume_role_policy, "refs/pull/*/merge") &&
       strcontains(aws_iam_role.this.assume_role_policy, "refs/heads/main") &&
       strcontains(aws_iam_role.this.assume_role_policy, "1473229803") &&
       strcontains(aws_iam_role.this.assume_role_policy, "128297499")
     )
-    error_message = "The role must trust only this repository's dev-plan jobs from main, never pull requests."
+    error_message = "The role must trust only this repository's dev-plan jobs from main and pull requests."
   }
 
   assert {
     condition = (
       one([for statement in jsondecode(aws_iam_role.this.assume_role_policy).Statement : statement if statement.Effect == "Allow"]).Condition.StringLike["token.actions.githubusercontent.com:ref"] ==
-      ["refs/heads/main"]
+      ["refs/heads/main", "refs/pull/*/merge"]
     )
     error_message = "The read-only plan role must not trust arbitrary branches."
   }
@@ -77,7 +77,7 @@ run "role_is_scoped_to_test_environment" {
     name_prefix          = "cloud5-infra-test"
     common_tags          = { Project = "terraform-cloud-project", Environment = "test", Owner = "drghassen", ManagedBy = "Terraform" }
     github_environment   = "test-plan"
-    github_ref_patterns  = ["refs/heads/main"]
+    github_ref_patterns  = ["refs/heads/main", "refs/pull/*/merge"]
     oidc_provider_arn    = "arn:aws:iam::326553917564:oidc-provider/token.actions.githubusercontent.com"
     github_owner_id      = "128297499"
     github_repository_id = "1473229803"
@@ -108,7 +108,7 @@ run "role_is_scoped_to_prod_environment" {
     name_prefix          = "cloud5-infra-prod"
     common_tags          = { Project = "terraform-cloud-project", Environment = "prod", Owner = "drghassen", ManagedBy = "Terraform" }
     github_environment   = "prod-plan"
-    github_ref_patterns  = ["refs/heads/main"]
+    github_ref_patterns  = ["refs/heads/main", "refs/pull/*/merge"]
     oidc_provider_arn    = "arn:aws:iam::326553917564:oidc-provider/token.actions.githubusercontent.com"
     github_owner_id      = "128297499"
     github_repository_id = "1473229803"

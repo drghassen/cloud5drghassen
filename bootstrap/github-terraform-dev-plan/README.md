@@ -5,8 +5,8 @@ the automatic DEV promotion stage from `main`. It does not create
 application or AWS workload resources, and it does not modify the existing
 GitHub OIDC provider.
 
-The trust policy is limited to this repository's `dev-plan` environment and
-the `main` branch. The permissions can read the exact DEV state object, manage
+The trust policy is limited to this repository's `dev-plan` environment on
+`main` and Pull Requests (`refs/pull/*/merge`). The permissions can read the exact DEV state object, manage
 only its lock file, and describe the infrastructure needed for a plan. They
 cannot create or modify resources, read Secrets Manager values, or pass IAM
 roles.

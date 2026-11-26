@@ -36,7 +36,7 @@ module "github_terraform_dev_plan" {
   name_prefix          = var.name_prefix
   common_tags          = local.common_tags
   github_environment   = var.github_environment
-  github_ref_patterns  = ["refs/heads/main"]
+  github_ref_patterns  = ["refs/heads/main", "refs/pull/*/merge"]
   oidc_provider_arn    = local.oidc_provider_arn
   github_owner_id      = var.github_owner_id
   github_repository_id = var.github_repository_id

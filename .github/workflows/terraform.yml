@@ -1,47 +1,16 @@
 name: terraform-infrastructure
 
 "on":
+  pull_request:
+
   push:
     branches:
       - main
-    paths:
-      - "modules/**"
-      - "environments/**"
-      - "bootstrap/**"
-      - "scripts/**"
-      - "docs/**"
-      - "README.md"
-      - ".gitignore"
-      - ".pre-commit-config.yaml"
-      - ".tflint.hcl"
-      - ".github/workflows/**"
-
-  pull_request:
-    paths:
-      - "modules/**"
-      - "environments/**"
-      - "bootstrap/**"
-      - "scripts/**"
-      - "docs/**"
-      - "README.md"
-      - ".gitignore"
-      - ".pre-commit-config.yaml"
-      - ".tflint.hcl"
-      - ".github/workflows/**"
 
   workflow_dispatch:
     inputs:
-      operation:
-        description: validate runs CI only. deploy targets one environment. promote runs DEV, then TEST, then PROD.
-        type: choice
-        required: true
-        default: validate
-        options:
-          - validate
-          - deploy
-          - promote
-      target_environment:
-        description: Used only when operation is deploy. Ignored for validate and promote.
+      environment:
+        description: Target environment (dev, test, or prod)
         type: choice
         required: true
         default: dev
@@ -49,6 +18,11 @@ name: terraform-infrastructure
           - dev
           - test
           - prod
+      apply:
+        description: Apply the generated plan (test and prod require manual approval)
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -58,24 +32,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  ci:
-    name: CI
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/terraform-ci.yml
-
-  policy:
-    name: Select deployment mode
-    needs: ci
+  security-scans:
+    name: Scan secrets and Terraform IaC
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
-    outputs:
-      deploy_dev: ${{ steps.decide.outputs.deploy_dev }}
-      deploy_test: ${{ steps.decide.outputs.deploy_test }}
-      deploy_prod: ${{ steps.decide.outputs.deploy_prod }}
 
     steps:
       - name: Check out repository
@@ -83,74 +45,632 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Decide which environments this run may deploy
-        id: decide
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          GIT_REF: ${{ github.ref }}
-          OPERATION: ${{ github.event.inputs.operation }}
-          TARGET_ENVIRONMENT: ${{ github.event.inputs.target_environment }}
-        run: python3 scripts/gha/deployment_policy.py
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
+        with:
+          python-version: "3.12"
 
-  dev-stage:
-    name: Deploy DEV
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="8.30.1"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          release_url="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
+          curl --fail --silent --show-error --location "$release_url/$archive" \
+            --output "$RUNNER_TEMP/$archive"
+          curl --fail --silent --show-error --location "$release_url/gitleaks_${version}_checksums.txt" \
+            --output "$RUNNER_TEMP/gitleaks-checksums.txt"
+          grep -E "  ${archive}$" "$RUNNER_TEMP/gitleaks-checksums.txt" \
+            | (cd "$RUNNER_TEMP" && sha256sum --check)
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Scan repository files for secrets
+        run: gitleaks dir --redact --no-banner .
+
+      - name: Install pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.7.0
+
+      - name: Scan Terraform with Checkov
+        run: pre-commit run checkov --all-files
+
+  terraform-lint:
+    name: Lint Terraform with TFLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: 0.66.0
+
+      - name: Install TFLint plugins
+        run: tflint --init --config="$GITHUB_WORKSPACE/.tflint.hcl"
+
+      - name: Lint Terraform configurations
+        run: tflint --recursive --minimum-failure-severity=error --config="$GITHUB_WORKSPACE/.tflint.hcl"
+
+  workflow-security:
+    name: Audit GitHub Actions workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Audit workflows with zizmor
+        uses: zizmorcore/zizmor-action@1b4550e929643b8b26a62303c6bd64814271a4f1 # v0.9.2
+        with:
+          inputs: .github/workflows
+          version: v1.33.1
+          online-audits: false
+          advanced-security: false
+          annotations: true
+
+  terraform-module-tests:
+    name: Test infrastructure modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Validate bootstrap Terraform roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          for root in \
+            bootstrap \
+            bootstrap/github-terraform-dev-plan \
+            bootstrap/github-terraform-dev-apply \
+            bootstrap/github-terraform-test-prod-plan \
+            bootstrap/github-terraform-test-prod-apply; do
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate
+          done
+
+      - name: Test required infrastructure modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          for module in network security load-balancer compute database storage github-terraform-plan github-terraform-apply; do
+            terraform -chdir="modules/$module" init -backend=false -input=false
+            terraform -chdir="modules/$module" test
+          done
+
+      - name: Run workflow contract tests
+        run: python3 -m unittest discover -s scripts/gha -p "test_*.py" -v
+
+  plan-dev:
+    name: Plan DEV
     needs:
-      - ci
-      - policy
-    if: needs.policy.outputs.deploy_dev == 'true'
+      - security-scans
+      - terraform-lint
+      - workflow-security
+      - terraform-module-tests
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev')
+    runs-on: ubuntu-latest
+    environment: dev-plan
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Require plan role and state bucket
+        env:
+          PLAN_ROLE: ${{ vars.AWS_TERRAFORM_DEV_PLAN_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PLAN_ROLE" || { echo "AWS_TERRAFORM_DEV_PLAN_ROLE_ARN is required." >&2; exit 1; }
+          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_DEV_PLAN_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-dev-plan
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize Terraform (dev)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/dev init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=eu-west-1"
+
+      - name: Validate Terraform (dev)
+        run: terraform -chdir=environments/dev validate
+
+      - name: Plan Terraform (dev)
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/dev plan -input=false \
+            -var-file="terraform.tfvars.example" \
+            -out=tfplan
+          terraform -chdir=environments/dev show -no-color tfplan > environments/dev/plan.txt
+          (cd environments/dev && sha256sum tfplan > tfplan.sha256)
+
+      - name: Upload Terraform plan (dev)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-dev-plan-${{ github.run_id }}
+          path: |
+            environments/dev/tfplan
+            environments/dev/plan.txt
+            environments/dev/tfplan.sha256
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      - name: Publish Terraform plan summary (dev)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Terraform plan (dev)"
+            echo
+            echo '```'
+            head -n 200 environments/dev/plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-dev:
+    name: Apply DEV
+    needs:
+      - plan-dev
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev' && inputs.apply))
+    runs-on: ubuntu-latest
+    environment: dev
     concurrency:
       group: terraform-state-dev-${{ github.repository }}
       cancel-in-progress: false
+    timeout-minutes: 60
     permissions:
-      actions: write
       contents: read
       id-token: write
-    uses: ./.github/workflows/terraform-environment-stage.yml
-    with:
-      environment: dev
 
-  test-stage:
-    name: Deploy TEST
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Require apply role and state bucket
+        env:
+          APPLY_ROLE: ${{ vars.AWS_TERRAFORM_DEV_APPLY_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$APPLY_ROLE" || { echo "AWS_TERRAFORM_DEV_APPLY_ROLE_ARN is required in the dev environment." >&2; exit 1; }
+          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_DEV_APPLY_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-dev-apply
+
+      - name: Download Terraform plan (dev)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: terraform-dev-plan-${{ github.run_id }}
+          path: environments/dev
+
+      - name: Verify plan integrity (dev)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd environments/dev
+          sha256sum --check tfplan.sha256
+
+      - name: Initialize Terraform (dev)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/dev init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=eu-west-1"
+
+      - name: Apply Terraform plan (dev)
+        run: terraform -chdir=environments/dev apply -input=false tfplan
+
+  plan-test:
+    name: Plan TEST
     needs:
-      - ci
-      - policy
-      - dev-stage
+      - security-scans
+      - terraform-lint
+      - workflow-security
+      - terraform-module-tests
+      - apply-dev
     if: >-
-      always() &&
-      needs.ci.result == 'success' &&
-      needs.policy.result == 'success' &&
-      needs.policy.outputs.deploy_test == 'true' &&
-      (needs.policy.outputs.deploy_dev != 'true' || needs.dev-stage.result == 'success')
+      !cancelled() &&
+      needs.security-scans.result == 'success' &&
+      needs.terraform-lint.result == 'success' &&
+      needs.workflow-security.result == 'success' &&
+      needs.terraform-module-tests.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'test') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.apply-dev.result == 'success'))
+    runs-on: ubuntu-latest
+    environment: test-plan
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Require plan role and state bucket
+        env:
+          PLAN_ROLE: ${{ vars.AWS_TERRAFORM_TEST_PLAN_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PLAN_ROLE" || { echo "AWS_TERRAFORM_TEST_PLAN_ROLE_ARN is required." >&2; exit 1; }
+          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_TEST_PLAN_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-test-plan
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize Terraform (test)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/test init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=eu-west-1"
+
+      - name: Validate Terraform (test)
+        run: terraform -chdir=environments/test validate
+
+      - name: Plan Terraform (test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/test plan -input=false \
+            -var-file="terraform.tfvars.example" \
+            -out=tfplan
+          terraform -chdir=environments/test show -no-color tfplan > environments/test/plan.txt
+          (cd environments/test && sha256sum tfplan > tfplan.sha256)
+
+      - name: Upload Terraform plan (test)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-test-plan-${{ github.run_id }}
+          path: |
+            environments/test/tfplan
+            environments/test/plan.txt
+            environments/test/tfplan.sha256
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      - name: Publish Terraform plan summary (test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Terraform plan (test)"
+            echo
+            echo '```'
+            head -n 200 environments/test/plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-test:
+    name: Apply TEST
+    needs:
+      - plan-test
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'test' && inputs.apply))
+    runs-on: ubuntu-latest
+    environment: test
     concurrency:
       group: terraform-state-test-${{ github.repository }}
       cancel-in-progress: false
+    timeout-minutes: 60
     permissions:
-      actions: write
       contents: read
       id-token: write
-    uses: ./.github/workflows/terraform-environment-stage.yml
-    with:
-      environment: test
 
-  prod-stage:
-    name: Deploy PROD
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Require apply role and state bucket
+        env:
+          APPLY_ROLE: ${{ vars.AWS_TERRAFORM_TEST_APPLY_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$APPLY_ROLE" || { echo "AWS_TERRAFORM_TEST_APPLY_ROLE_ARN is required in the test environment." >&2; exit 1; }
+          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_TEST_APPLY_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-test-apply
+
+      - name: Download Terraform plan (test)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: terraform-test-plan-${{ github.run_id }}
+          path: environments/test
+
+      - name: Verify plan integrity (test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd environments/test
+          sha256sum --check tfplan.sha256
+
+      - name: Initialize Terraform (test)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/test init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=eu-west-1"
+
+      - name: Apply Terraform plan (test)
+        run: terraform -chdir=environments/test apply -input=false tfplan
+
+  plan-prod:
+    name: Plan PROD
     needs:
-      - ci
-      - policy
-      - test-stage
+      - security-scans
+      - terraform-lint
+      - workflow-security
+      - terraform-module-tests
+      - apply-test
     if: >-
-      always() &&
-      needs.ci.result == 'success' &&
-      needs.policy.result == 'success' &&
-      needs.policy.outputs.deploy_prod == 'true' &&
-      (needs.policy.outputs.deploy_test != 'true' || needs.test-stage.result == 'success')
+      !cancelled() &&
+      needs.security-scans.result == 'success' &&
+      needs.terraform-lint.result == 'success' &&
+      needs.workflow-security.result == 'success' &&
+      needs.terraform-module-tests.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.apply-test.result == 'success'))
+    runs-on: ubuntu-latest
+    environment: prod-plan
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Require plan role and state bucket
+        env:
+          PLAN_ROLE: ${{ vars.AWS_TERRAFORM_PROD_PLAN_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PLAN_ROLE" || { echo "AWS_TERRAFORM_PROD_PLAN_ROLE_ARN is required." >&2; exit 1; }
+          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_PROD_PLAN_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-prod-plan
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize Terraform (prod)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/prod init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=eu-west-1"
+
+      - name: Validate Terraform (prod)
+        run: terraform -chdir=environments/prod validate
+
+      - name: Plan Terraform (prod)
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/prod plan -input=false \
+            -var-file="terraform.tfvars.example" \
+            -out=tfplan
+          terraform -chdir=environments/prod show -no-color tfplan > environments/prod/plan.txt
+          (cd environments/prod && sha256sum tfplan > tfplan.sha256)
+
+      - name: Upload Terraform plan (prod)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-prod-plan-${{ github.run_id }}
+          path: |
+            environments/prod/tfplan
+            environments/prod/plan.txt
+            environments/prod/tfplan.sha256
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      - name: Publish Terraform plan summary (prod)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Terraform plan (prod)"
+            echo
+            echo '```'
+            head -n 200 environments/prod/plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-prod:
+    name: Apply PROD
+    needs:
+      - plan-prod
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && inputs.apply))
+    runs-on: ubuntu-latest
+    environment: prod
     concurrency:
       group: terraform-state-prod-${{ github.repository }}
       cancel-in-progress: false
+    timeout-minutes: 120
     permissions:
-      actions: write
       contents: read
       id-token: write
-    uses: ./.github/workflows/terraform-environment-stage.yml
-    with:
-      environment: prod
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Require apply role and state bucket
+        env:
+          APPLY_ROLE: ${{ vars.AWS_TERRAFORM_PROD_APPLY_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$APPLY_ROLE" || { echo "AWS_TERRAFORM_PROD_APPLY_ROLE_ARN is required in the prod environment." >&2; exit 1; }
+          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_PROD_APPLY_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-prod-apply
+
+      - name: Download Terraform plan (prod)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: terraform-prod-plan-${{ github.run_id }}
+          path: environments/prod
+
+      - name: Verify plan integrity (prod)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd environments/prod
+          sha256sum --check tfplan.sha256
+
+      - name: Initialize Terraform (prod)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=environments/prod init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=eu-west-1"
+
+      - name: Apply Terraform plan (prod)
+        run: terraform -chdir=environments/prod apply -input=false tfplan

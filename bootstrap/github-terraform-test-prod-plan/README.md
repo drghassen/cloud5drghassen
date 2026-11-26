@@ -1,7 +1,7 @@
 # GitHub OIDC plan roles for TEST and PROD
 
 This bootstrap creates separate read-only plan roles for TEST and PROD. Each
-role trusts only its GitHub environment on `main` and can read only that
+role trusts only its GitHub environment on `main` and Pull Requests (`refs/pull/*/merge`) and can read only that
 environment's Terraform state and lock file. It does not create workload
 resources.
 

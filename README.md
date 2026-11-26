@@ -109,11 +109,13 @@ Run local checks:
 .\scripts\check.ps1
 ```
 
-The workflow runs `terraform fmt`, initializes and validates each root, and
-runs module tests without AWS changes. Pull requests run only these static
-checks and scans without AWS credentials. On `main`, all environment stages
-start automatically after every scan, validation, and module-test gate passes.
-Each apply pauses for approval in its matching protected GitHub environment.
+The workflow runs security/lint scans (Gitleaks, Checkov, TFLint, zizmor) and
+module tests without AWS credentials. Pull requests run these checks plus
+read-only `terraform fmt -check -recursive`, `init`, `validate`, and `plan`
+(`tfplan` and `plan.txt`) for `dev`, `test`, and `prod`, without applying. On
+`main`, promotion proceeds through `dev`, `test` (manual approval), and `prod`
+(mandatory manual approval), or targets a single environment via
+`workflow_dispatch`.
 
 ## Costs and cleanup
 

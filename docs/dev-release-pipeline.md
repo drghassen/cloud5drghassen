@@ -1,44 +1,39 @@
-# Terraform promotion pipeline
+# Terraform CI/CD pipeline
 
-The repository is infrastructure-only. `.github/workflows/terraform.yml`
-runs static checks on pull requests and pushes to `main`. Pull requests do not
-receive AWS credentials and never plan or apply infrastructure.
+The repository uses a single workflow file, `.github/workflows/terraform.yml`,
+aligned with the project specification while preserving all security and quality
+scans.
 
-## Automatic order on `main`
+## Pipeline stages
 
-The scan, lint, workflow-audit, Terraform validation, and module-test jobs
-start in parallel. Each environment stage waits for all of them to pass, then
-promotion proceeds sequentially:
-
-1. **DEV:** create a read-only plan and upload its readable output, binary plan,
-   and SHA-256 digest; wait for approval in the `dev` GitHub environment; apply
-   only that uploaded plan.
-2. **TEST:** starts only after DEV apply succeeds; plan, wait for approval in
-   `test`, then apply the exact plan.
-3. **PROD:** starts only after TEST apply succeeds; plan, wait for approval in
-   `prod`, then apply the exact plan.
-
-The next environment cannot plan or apply until the previous environment has
-completed. A rejected or failed apply stops the promotion chain. Manual
-`workflow_dispatch` from `main` runs the same sequence; dispatching another
-branch runs checks only.
-
-Before any apply role is assumed, the job confirms that `main` still points to
-the commit that produced the plan. This prevents approval of an outdated plan
-after a newer commit has been pushed. The binary plan and digest are retained
-for seven days; approve before expiration. No apply job creates a fresh plan
-or runs `terraform destroy`.
-
-The scan, lint, workflow-audit, validation, and module-test jobs are peers;
-one scan does not launch the others. The stage jobs use `needs` to wait for
-all required gates and then sequence DEV -> TEST -> PROD. The `dev-plan`,
-`test-plan`, and `prod-plan` environments must not have required reviewers;
-approval gates belong on `dev`, `test`, and `prod`.
+1. **Scans and static checks (no AWS credentials):**
+   - `security-scans`: Gitleaks secret scanning and Checkov IaC scanning.
+   - `terraform-lint`: TFLint recursive check.
+   - `workflow-security`: `zizmor` security audit of `.github/workflows`.
+   - `terraform-module-tests`: Bootstrap validation, module `terraform test`,
+     and workflow contract tests.
+2. **Pull Requests (`pull_request`):**
+   - After scans pass, runs `plan-dev`, `plan-test`, and `plan-prod` in
+     read-only mode via GitHub OIDC (`dev-plan`, `test-plan`, `prod-plan`).
+   - Executes `terraform fmt -check -recursive`, `terraform init -input=false`,
+     `terraform validate`, `terraform plan -input=false -out=tfplan`, and
+     `terraform show -no-color tfplan > plan.txt`.
+   - Publishes `tfplan` and `plan.txt` as workflow artifacts and writes the
+     readable plan to the GitHub Step Summary. Never runs `apply`.
+3. **Push to `main` (`push`) and manual runs (`workflow_dispatch`):**
+   - On `push` to `main`, promotion runs sequentially:
+     - `plan-dev` -> `apply-dev` (`environment: dev`)
+     - `plan-test` -> `apply-test` (`environment: test`, manual approval gate)
+     - `plan-prod` -> `apply-prod` (`environment: prod`, mandatory manual approval gate)
+   - On `workflow_dispatch`, the operator explicitly selects `environment`
+     (`dev`, `test`, or `prod`) and whether to `apply` (`true`/`false`).
+   - `apply-*` jobs only run from `refs/heads/main`, verify the `tfplan.sha256`
+     checksum, and apply the exact saved `tfplan`.
 
 ## GitHub configuration
 
-Configure these GitHub Actions **variables** before pushing a workflow update
-that enables automatic promotion:
+Configure these GitHub Actions **variables** (using GitHub OIDC, no static AWS
+access keys):
 
 | Scope | Variable | Purpose |
 |---|---|---|
@@ -50,39 +45,18 @@ that enables automatic promotion:
 | `test` | `AWS_TERRAFORM_TEST_APPLY_ROLE_ARN` | TEST apply role |
 | `prod` | `AWS_TERRAFORM_PROD_APPLY_ROLE_ARN` | PROD apply role |
 
-Add `drghassen` as a required reviewer for the `dev`, `test`, and `prod`
-environments. The same account can approve its own deployment unless GitHub's
-prevent-self-review control is enabled and supported for the repository. This
-is a manual gate, not independent review if the initiator is also the only
-reviewer. Protect `main` with required reviews/status checks for a stronger
-separation of duties.
+Configure required reviewers in GitHub Environments for `test` and `prod`
+(mandatory manual approval before `apply`). Keep `dev-plan`, `test-plan`, and
+`prod-plan` without required reviewers so Pull Request and plan stages can
+produce `tfplan` and `plan.txt` automatically after scans pass.
 
-The `dev-plan`, `test-plan`, and `prod-plan` roles are read-only for their
-matching environment state and AWS metadata. They are restricted to the new
-repository, its immutable GitHub owner/repository IDs, the matching plan
-environment, and `main`. The apply roles are separate, scoped to only their
-environment's state key and named/tagged AWS resources, and trusted only by
-the matching protected GitHub environment on `main`. All roles use GitHub
-OIDC; do not configure static AWS access keys.
+The read-only plan roles (`bootstrap/github-terraform-dev-plan` and
+`bootstrap/github-terraform-test-prod-plan`) trust `refs/heads/main` and
+`refs/pull/*/merge` for their matching `*-plan` GitHub environment. The apply
+roles (`bootstrap/github-terraform-dev-apply` and
+`bootstrap/github-terraform-test-prod-apply`) trust only `refs/heads/main`.
 
-The DEV roles are maintained in
-`bootstrap/github-terraform-dev-plan` and
-`bootstrap/github-terraform-dev-apply`. The TEST/PROD plan and apply roles are
-maintained in `bootstrap/github-terraform-test-prod-plan` and
-`bootstrap/github-terraform-test-prod-apply`; each bootstrap has a separate
-Terraform state key. Review bootstrap plans before provisioning roles. These
-bootstrap roots create IAM roles and policies only, not workload resources.
-
-## Checks and deployment safety
-
-The workflow runs Gitleaks, Checkov, TFLint, zizmor, recursive Terraform
-formatting and validation, and Terraform module tests. Static checks do not
-receive AWS credentials. Checkov failures are not suppressed globally;
-accepted exceptions are recorded next to affected Terraform resources and
-explained in [security decisions](./security/README.md).
-
-Each environment plan uses its committed `terraform.tfvars.example` and its
-isolated state key:
+## Isolated state keys
 
 | Environment | State key |
 |---|---|
@@ -90,13 +64,4 @@ isolated state key:
 | TEST | `cloud5/infrastructure/test/terraform.tfstate` |
 | PROD | `cloud5/infrastructure/prod/terraform.tfstate` |
 
-Review the plan artifact and estimated costs before approving. TEST is
-disposable; PROD defaults include cost-bearing high-availability settings,
-including two NAT Gateways and Multi-AZ RDS. HTTP is used with the ALB's AWS
-DNS name and is unencrypted; do not send credentials or sensitive data through
-these demonstration endpoints. See [cost guidance](./costs.md).
-
-Workflow concurrency prevents simultaneous promotion runs and never cancels a
-possibly active apply. If `main` advances while a run is waiting for approval,
-cancel that older run manually so the newest run can start. If an old run
-reaches its apply job, the stale-commit checks reject it before applying.
+See [cost guidance](./costs.md) and [security decisions](./security/README.md).
