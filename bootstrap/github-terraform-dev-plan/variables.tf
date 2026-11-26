@@ -51,7 +51,7 @@ variable "state_bucket_name" {
 }
 
 variable "state_key" {
-  description = "Exact DEV Terraform state key the PR plan role may read."
+  description = "Exact DEV Terraform state key the manual plan role may read."
   type        = string
   default     = "cloud5/infrastructure/dev/terraform.tfstate"
 }

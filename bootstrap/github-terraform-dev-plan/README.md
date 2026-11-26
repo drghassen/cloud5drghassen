@@ -23,8 +23,8 @@ the AWS identity before initializing:
 
 ```powershell
 aws sts get-caller-identity
-terraform -chdir=bootstrap\github-terraform-dev-plan init -input=false `
-  -backend-config="bucket=cloud5-terraform-stockyard-drghassen-state-326553917564"
+terraform -chdir=bootstrap\github-terraform-dev-plan init -input=false -reconfigure `
+  -backend-config="bucket=cloud5-terraform-drghassen-state-326553917564"
 terraform -chdir=bootstrap\github-terraform-dev-plan validate
 terraform -chdir=bootstrap\github-terraform-dev-plan plan -out=dev-plan-role.tfplan
 terraform -chdir=bootstrap\github-terraform-dev-plan show -no-color dev-plan-role.tfplan
@@ -43,11 +43,11 @@ environment. Do not configure long-lived AWS access keys. Manual DEV apply is
 separate: it requires a separately reviewed apply role ARN in the protected
 GitHub `dev` environment and required reviewers on that environment.
 
-The backend bucket in the init command is the existing legacy bucket storing
-this bootstrap's own Terraform state; `state_bucket_name` is the separate,
-current bucket the plan role can read for the DEV environment. Preserve the
-existing bootstrap backend state when updating the role; do not change its
-backend without a separately reviewed state migration.
+The backend bucket in the init command is the approved state bucket; this
+bootstrap's own state uses the separate key
+`bootstrap/drghassen/dev-plan/terraform.tfstate`. The plan role can read only
+the DEV environment state key configured by `state_bucket_name` and `state_key`.
+Preserve the bootstrap state key when updating the role.
 
 <!-- BEGIN_TF_DOCS -->
 ## Requirements

@@ -27,6 +27,12 @@ Checkov failures are not suppressed globally; accepted, cost- or scope-related
 exceptions are recorded next to the affected Terraform resources and explained
 in [security decisions](./security/README.md).
 
+The scan, lint, workflow-audit, validation, and module-test jobs are peers and
+start in parallel; one scan job does not launch the others. The `dev-plan` job
+uses `needs` to wait for every required gate. Because that job is enabled only
+for manual dispatches from `main`, pushes and pull requests run checks without
+assuming AWS credentials.
+
 The DEV plan job requires these GitHub `dev-plan` environment variables:
 
 | Variable | Purpose |
@@ -50,9 +56,14 @@ Manual dispatch on `main` defaults to plan-only. Setting the explicit `apply`
 input enables a separate apply job targeting the GitHub `dev` environment.
 The environment currently has no required reviewer, as authorized for this
 individual project, so the apply proceeds without an independent approval.
-The job downloads the binary plan from the same workflow run, verifies its
-SHA-256, and applies only that plan. It never makes a fresh plan during the
-apply job.
+With `apply=false`, the run stops after uploading the plan artifact. With
+`apply=true`, the apply job starts automatically after the plan succeeds; it
+downloads that run's binary plan, verifies its SHA-256, and applies only that
+plan. It never makes a fresh plan during the apply job. Since `dev` currently
+has no required reviewer, do not set `apply=true` unless you authorize
+immediate apply. To review the generated artifact before applying, first add a
+required reviewer to the `dev` environment; the apply job will then wait for
+that approval.
 
 Before enabling apply, configure these variables in the GitHub environments:
 
