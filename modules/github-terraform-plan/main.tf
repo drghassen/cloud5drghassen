@@ -143,6 +143,7 @@ resource "aws_iam_role_policy" "this" {
         Effect = "Allow"
         Action = [
           "s3:GetBucketAcl",
+          "s3:GetBucketCORS",
           "s3:GetBucketLocation",
           "s3:GetBucketOwnershipControls",
           "s3:GetBucketPolicy",

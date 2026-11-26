@@ -16,6 +16,7 @@ locals {
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:internet-gateway/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group-rule/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:elastic-ip/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:natgateway/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*"
@@ -166,7 +167,7 @@ resource "aws_iam_role_policy" "this" {
       {
         Sid      = "ReadApplicationBucketConfiguration"
         Effect   = "Allow"
-        Action   = ["s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:ListBucket"]
+        Action   = ["s3:GetBucketAcl", "s3:GetBucketCORS", "s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:ListBucket"]
         Resource = local.storage_bucket_arn
       },
       {
