@@ -1,6 +1,8 @@
 locals {
   role_name        = "${var.name_prefix}-github-terraform-apply"
-  subject          = "repo:${var.github_repository}:environment:${var.github_environment}"
+  repo_owner       = split("/", var.github_repository)[0]
+  repo_name        = split("/", var.github_repository)[1]
+  subject          = "repo:${local.repo_owner}@${var.github_owner_id}/${local.repo_name}@${var.github_repository_id}:environment:${var.github_environment}"
   state_object_arn = "${var.state_bucket_arn}/${var.state_key}"
   state_lock_arn   = "${local.state_object_arn}.tflock"
 
