@@ -21,7 +21,7 @@ run "role_is_restricted_to_dev_main" {
 
   assert {
     condition = (
-      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen/cloud5drghassen:environment:dev") &&
+      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen@128297499/cloud5drghassen@1473229803:environment:dev") &&
       strcontains(aws_iam_role.this.assume_role_policy, "refs/heads/main") &&
       strcontains(aws_iam_role.this.assume_role_policy, "1473229803") &&
       strcontains(aws_iam_role.this.assume_role_policy, "128297499") &&
@@ -107,7 +107,7 @@ run "test_apply_role_is_scoped_to_test_state_and_environment" {
 
   assert {
     condition = (
-      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen/cloud5drghassen:environment:test") &&
+      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen@128297499/cloud5drghassen@1473229803:environment:test") &&
       strcontains(aws_iam_role.this.assume_role_policy, "refs/heads/main") &&
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ReadAndWriteOnlyTestState"]).Resource ==
       "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/infrastructure/test/terraform.tfstate" &&
@@ -139,7 +139,7 @@ run "prod_apply_role_is_scoped_to_prod_state_and_environment" {
 
   assert {
     condition = (
-      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen/cloud5drghassen:environment:prod") &&
+      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen@128297499/cloud5drghassen@1473229803:environment:prod") &&
       strcontains(aws_iam_role.this.assume_role_policy, "refs/heads/main") &&
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ReadAndWriteOnlyProdState"]).Resource ==
       "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/infrastructure/prod/terraform.tfstate" &&
