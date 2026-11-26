@@ -15,6 +15,8 @@ $rootDirs = @(
     "bootstrap",
     "bootstrap\github-terraform-dev-plan",
     "bootstrap\github-terraform-dev-apply",
+    "bootstrap\github-terraform-test-prod-plan",
+    "bootstrap\github-terraform-test-prod-apply",
     "environments\dev",
     "environments\test",
     "environments\prod"

@@ -1,0 +1,194 @@
+name: terraform-plan
+
+"on":
+  workflow_call:
+    inputs:
+      environment:
+        description: Terraform environment to plan (dev, test, or prod).
+        required: true
+        type: string
+    outputs:
+      plan_sha256:
+        description: SHA-256 digest of the binary Terraform plan created by this run.
+        value: ${{ jobs.plan.outputs.plan_sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Validate ${{ inputs.environment }} plan request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.target.outputs.accepted }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Accept only one known environment
+        id: target
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            dev|test|prod) ;;
+            *)
+              echo "Unsupported plan environment." >&2
+              exit 1
+              ;;
+          esac
+          echo "accepted=true" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: Plan ${{ inputs.environment }}
+    needs: guard
+    if: needs.guard.outputs.accepted == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment == 'dev' && 'dev-plan' || inputs.environment == 'test' && 'test-plan' || inputs.environment == 'prod' && 'prod-plan' }}
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+    outputs:
+      plan_sha256: ${{ steps.manifest.outputs.plan_sha256 }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Reject untrusted deployment context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          JOB_WORKFLOW_FILE: ${{ job.workflow_file_path }}
+          EXPECTED_JOB_WORKFLOW_FILE: .github/workflows/terraform-plan.yml
+        run: python3 scripts/gha/assert_deployment_context.py
+
+      - name: Require the plan role and state bucket
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PLAN_ROLE: ${{ inputs.environment == 'dev' && vars.AWS_TERRAFORM_DEV_PLAN_ROLE_ARN || inputs.environment == 'test' && vars.AWS_TERRAFORM_TEST_PLAN_ROLE_ARN || inputs.environment == 'prod' && vars.AWS_TERRAFORM_PROD_PLAN_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          AWS_REGION: eu-west-1
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            dev) role_name="AWS_TERRAFORM_DEV_PLAN_ROLE_ARN" ;;
+            test) role_name="AWS_TERRAFORM_TEST_PLAN_ROLE_ARN" ;;
+            prod) role_name="AWS_TERRAFORM_PROD_PLAN_ROLE_ARN" ;;
+            *) echo "Unsupported plan environment." >&2; exit 1 ;;
+          esac
+          test -n "$PLAN_ROLE" || { echo "$role_name is required." >&2; exit 1; }
+          python3 scripts/gha/assert_backend_target.py
+
+      - name: Assume the read-only plan role with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ inputs.environment == 'dev' && vars.AWS_TERRAFORM_DEV_PLAN_ROLE_ARN || inputs.environment == 'test' && vars.AWS_TERRAFORM_TEST_PLAN_ROLE_ARN || inputs.environment == 'prod' && vars.AWS_TERRAFORM_PROD_PLAN_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-${{ inputs.environment }}-plan
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Initialize environment state
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          AWS_REGION: eu-west-1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gha/assert_backend_target.py
+          terraform -chdir="environments/$ENVIRONMENT" init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Create readable and binary plan
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            dev|test|prod) ;;
+            *) echo "Unsupported plan environment." >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/plan-artifact"
+          terraform -chdir="environments/$ENVIRONMENT" plan -input=false \
+            -var-file="$GITHUB_WORKSPACE/environments/$ENVIRONMENT/terraform.tfvars.example" \
+            -out="$RUNNER_TEMP/plan-artifact/$ENVIRONMENT.tfplan"
+          terraform -chdir="environments/$ENVIRONMENT" show -no-color \
+            "$RUNNER_TEMP/plan-artifact/$ENVIRONMENT.tfplan" \
+            > "$RUNNER_TEMP/plan-artifact/$ENVIRONMENT-plan.txt"
+
+      - name: Record plan manifest and digest
+        id: manifest
+        env:
+          PLAN_DIR: ${{ runner.temp }}/plan-artifact
+          ENVIRONMENT: ${{ inputs.environment }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(python3 scripts/gha/plan_artifact.py write)"
+          printf '%s\n' "$digest" | grep -Eq '^[a-f0-9]{64}$'
+          echo "plan_sha256=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-${{ inputs.environment }}-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan-artifact
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      - name: Publish plan review summary
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          PLAN_SHA256: ${{ steps.manifest.outputs.plan_sha256 }}
+          PLAN_DIR: ${{ runner.temp }}/plan-artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Terraform plan (${ENVIRONMENT})"
+            echo
+            echo "Review this plan before approving the ${ENVIRONMENT} apply environment."
+            echo "Uploading this artifact does not approve the apply."
+            echo
+            echo "- Commit: \`${COMMIT}\`"
+            echo "- Artifact: \`terraform-${ENVIRONMENT}-plan-${RUN_ID}\`"
+            echo "- SHA-256: \`${PLAN_SHA256}\`"
+            echo
+            echo "<details><summary>Readable plan (first 200 lines)</summary>"
+            echo
+            echo '```'
+            head -n 200 "$PLAN_DIR/${ENVIRONMENT}-plan.txt"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

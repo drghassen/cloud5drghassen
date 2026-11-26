@@ -6,11 +6,9 @@ the `main` branch. Its policy scopes Terraform state to the DEV key, limits
 `iam:PassRole` to the DEV EC2 instance role, and grants only the actions used
 by the project's DEV resources in `eu-west-1`.
 
-The GitHub `dev` environment currently has no required reviewer, as authorized
-for this individual project. A manual workflow dispatch with `apply=true`
-can therefore apply the plan without an independent human approval. The
-workflow still applies only the binary plan created in that same run. Enable
-main-branch protection and add an environment reviewer before using this for
+The GitHub `dev` environment must have a required reviewer before the automatic
+promotion workflow is enabled. The workflow applies only the binary plan
+created in that same run. Add main-branch protection before using this for
 anything beyond a disposable demonstration.
 
 ## Plan and provision

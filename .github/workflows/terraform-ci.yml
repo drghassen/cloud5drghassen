@@ -1,0 +1,190 @@
+name: terraform-ci
+
+"on":
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  security-scans:
+    name: Scan secrets and Terraform IaC
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="8.30.1"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          release_url="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
+          curl --fail --silent --show-error --location "$release_url/$archive" \
+            --output "$RUNNER_TEMP/$archive"
+          curl --fail --silent --show-error --location "$release_url/gitleaks_${version}_checksums.txt" \
+            --output "$RUNNER_TEMP/gitleaks-checksums.txt"
+          grep -E "  ${archive}$" "$RUNNER_TEMP/gitleaks-checksums.txt" \
+            | (cd "$RUNNER_TEMP" && sha256sum --check)
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Scan repository files for secrets
+        run: gitleaks dir --redact --no-banner .
+
+      - name: Install pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.7.0
+
+      - name: Scan Terraform with Checkov
+        run: pre-commit run checkov --all-files
+
+  terraform-lint:
+    name: Lint Terraform with TFLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: 0.66.0
+
+      - name: Install TFLint plugins
+        run: tflint --init --config="$GITHUB_WORKSPACE/.tflint.hcl"
+
+      - name: Lint Terraform configurations
+        run: tflint --recursive --minimum-failure-severity=error --config="$GITHUB_WORKSPACE/.tflint.hcl"
+
+  workflow-security:
+    name: Audit GitHub Actions workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Audit workflows with zizmor
+        uses: zizmorcore/zizmor-action@1b4550e929643b8b26a62303c6bd64814271a4f1 # v0.9.2
+        with:
+          inputs: .github/workflows
+          version: v1.33.1
+          online-audits: false
+          advanced-security: false
+          annotations: true
+
+  terraform-validate:
+    name: Format and validate Terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+
+      - name: Enforce infrastructure-only repository scope
+        run: |
+          test ! -e application
+          test ! -e ansible
+
+      - name: Initialize and validate bootstrap roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          for root in \
+            bootstrap \
+            bootstrap/github-terraform-dev-plan \
+            bootstrap/github-terraform-dev-apply \
+            bootstrap/github-terraform-test-prod-plan \
+            bootstrap/github-terraform-test-prod-apply; do
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate
+          done
+
+      - name: Initialize and validate all environments
+        shell: bash
+        run: |
+          set -euo pipefail
+          for environment in dev test prod; do
+            terraform -chdir="environments/$environment" init -backend=false -input=false
+            terraform -chdir="environments/$environment" validate
+          done
+
+  terraform-module-tests:
+    name: Test infrastructure modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Test required infrastructure modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          for module in network security load-balancer compute database storage github-terraform-plan github-terraform-apply; do
+            terraform -chdir="modules/$module" init -backend=false -input=false
+            terraform -chdir="modules/$module" test
+          done
+
+  pipeline-policy-tests:
+    name: Test deployment policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Run pipeline governance unit tests
+        run: python3 -m unittest discover -s scripts/gha -p "test_*.py" -v

@@ -1,7 +1,7 @@
 # GitHub OIDC plan role for DEV
 
 This isolated bootstrap creates the read-only GitHub Actions role used by
-manually dispatched DEV Terraform plans from `main`. It does not create
+the automatic DEV promotion stage from `main`. It does not create
 application or AWS workload resources, and it does not modify the existing
 GitHub OIDC provider.
 
@@ -38,10 +38,11 @@ terraform -chdir=bootstrap\github-terraform-dev-plan apply dev-plan-role.tfplan
 terraform -chdir=bootstrap\github-terraform-dev-plan output -raw github_terraform_dev_plan_role_arn
 ```
 
-Set the returned ARN and `TERRAFORM_STATE_BUCKET` in the GitHub `dev-plan`
-environment. Do not configure long-lived AWS access keys. Manual DEV apply is
-separate: it requires a separately reviewed apply role ARN in the protected
-GitHub `dev` environment and required reviewers on that environment.
+Set the returned ARN as `AWS_TERRAFORM_DEV_PLAN_ROLE_ARN` in the GitHub
+`dev-plan` environment. Do not configure long-lived AWS access keys. DEV apply
+uses the separately provisioned apply role in the protected GitHub `dev`
+environment; the promotion flow is documented in
+`docs/dev-release-pipeline.md`.
 
 The backend bucket in the init command is the approved state bucket; this
 bootstrap's own state uses the separate key
@@ -79,7 +80,7 @@ No resources.
 | ---- | ----------- | ---- | ------- | :------: |
 | <a name="input_aws_region"></a> [aws\_region](#input\_aws\_region) | AWS region containing the DEV deployment. | `string` | `"eu-west-1"` | no |
 | <a name="input_environment"></a> [environment](#input\_environment) | AWS environment tag applied to the plan role. | `string` | `"dev"` | no |
-| <a name="input_github_environment"></a> [github\_environment](#input\_github\_environment) | GitHub environment used by manually dispatched DEV Terraform plans. | `string` | `"dev-plan"` | no |
+| <a name="input_github_environment"></a> [github\_environment](#input\_github\_environment) | GitHub environment used by DEV Terraform plans. | `string` | `"dev-plan"` | no |
 | <a name="input_github_owner_id"></a> [github\_owner\_id](#input\_github\_owner\_id) | Immutable numeric GitHub owner ID. | `string` | `"128297499"` | no |
 | <a name="input_github_repository"></a> [github\_repository](#input\_github\_repository) | GitHub repository in owner/name format. | `string` | `"drghassen/cloud5drghassen"` | no |
 | <a name="input_github_repository_id"></a> [github\_repository\_id](#input\_github\_repository\_id) | Immutable numeric GitHub repository ID. | `string` | `"1473229803"` | no |
@@ -87,7 +88,7 @@ No resources.
 | <a name="input_owner"></a> [owner](#input\_owner) | Owner tag applied to the role. | `string` | `"drghassen"` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | Project tag applied to the role. | `string` | `"terraform-cloud-project"` | no |
 | <a name="input_state_bucket_name"></a> [state\_bucket\_name](#input\_state\_bucket\_name) | Existing user-owned S3 bucket holding the DEV Terraform state. | `string` | `"cloud5-terraform-drghassen-state-326553917564"` | no |
-| <a name="input_state_key"></a> [state\_key](#input\_state\_key) | Exact DEV Terraform state key the manual plan role may read. | `string` | `"cloud5/infrastructure/dev/terraform.tfstate"` | no |
+| <a name="input_state_key"></a> [state\_key](#input\_state\_key) | Exact DEV Terraform state key the read-only plan role may read. | `string` | `"cloud5/infrastructure/dev/terraform.tfstate"` | no |
 
 ## Outputs
 

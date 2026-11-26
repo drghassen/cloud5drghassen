@@ -21,15 +21,15 @@
 - **State:** environment state keys are isolated in S3, encrypted, and locked
   with Terraform's native S3 lock file. State can contain sensitive
   infrastructure metadata; access must be limited to approved operators and
-  the read-only DEV plan role.
+  the matching read-only environment plan role.
 - **DNS:** the unused DNS bootstrap code was removed. Its current local state
   was empty, but an older backup contained four resource entries; live AWS
   status is unverified. Check Route 53 before assuming hosted zones were
   deleted or that their charges have stopped.
-- **CI:** plans use GitHub OIDC and a read-only role. A manual DEV apply is
-  opt-in and gated by the protected `dev` environment; it requires a separately
-  reviewed apply role. No workflow runs `terraform destroy` or uses static AWS
-  keys.
+- **CI:** plans and applies use separate GitHub OIDC roles per environment.
+  Promotion is sequential DEV -> TEST -> PROD, with each apply gated by its
+  matching protected GitHub environment and scoped to that environment's state
+  and resources. No workflow runs `terraform destroy` or uses static AWS keys.
 
 Review the generated Terraform plan and AWS IAM policy scope before provisioning.
 These controls describe the code; they do not prove that AWS resources have
@@ -40,7 +40,7 @@ been deployed or that account-level settings are configured.
 The GitHub Actions workflow runs Gitleaks against repository files, Checkov
 against Terraform, TFLint against Terraform configurations, and zizmor against
 the workflow definitions. These jobs do not receive AWS credentials and are
-required before the DEV plan job. Scan versions are pinned in the workflow or
+required before any environment plan. Scan versions are pinned in the workflow or
 the pre-commit configuration. Checkov is a blocking gate for findings that are
 not explicitly and locally justified with a `#checkov:skip` annotation.
 

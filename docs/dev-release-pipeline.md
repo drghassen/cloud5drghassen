@@ -1,96 +1,102 @@
-# Infrastructure CI/CD
+# Terraform promotion pipeline
 
-The repository is infrastructure-only. It does not build, package, migrate, or
-release an application. The EC2 compute module uses `user_data` to install
-Nginx for the infrastructure demonstration.
+The repository is infrastructure-only. `.github/workflows/terraform.yml`
+runs static checks on pull requests and pushes to `main`. Pull requests do not
+receive AWS credentials and never plan or apply infrastructure.
 
-## Pull requests and pushes to `main`
+## Automatic order on `main`
 
-`.github/workflows/terraform.yml` performs:
+The scan, lint, workflow-audit, Terraform validation, and module-test jobs
+start in parallel. Each environment stage waits for all of them to pass, then
+promotion proceeds sequentially:
 
-1. Workflow security analysis with zizmor, secret scanning with Gitleaks, IaC
-   scanning with Checkov, and Terraform linting with TFLint.
-2. Recursive Terraform formatting check.
-3. Backend-free initialization and validation for the state-bucket,
-   DEV plan-role and apply-role bootstraps, and `dev`, `test`, and
-   `prod` roots.
-4. Terraform tests for the infrastructure modules, including the DEV plan-role
-   and apply-role modules.
-5. On manually dispatched DEV runs from `main` only, a read-only plan using
-   GitHub OIDC. Pull requests receive no AWS credentials and do not run plans.
-   The readable plan, binary plan, and SHA-256 digest are uploaded as a
-   short-lived artifact.
+1. **DEV:** create a read-only plan and upload its readable output, binary plan,
+   and SHA-256 digest; wait for approval in the `dev` GitHub environment; apply
+   only that uploaded plan.
+2. **TEST:** starts only after DEV apply succeeds; plan, wait for approval in
+   `test`, then apply the exact plan.
+3. **PROD:** starts only after TEST apply succeeds; plan, wait for approval in
+   `prod`, then apply the exact plan.
 
-The static scans and Terraform validation run without AWS credentials. DEV
-planning is blocked unless all scan, validation, and module-test jobs pass.
-Checkov failures are not suppressed globally; accepted, cost- or scope-related
-exceptions are recorded next to the affected Terraform resources and explained
-in [security decisions](./security/README.md).
+The next environment cannot plan or apply until the previous environment has
+completed. A rejected or failed apply stops the promotion chain. Manual
+`workflow_dispatch` from `main` runs the same sequence; dispatching another
+branch runs checks only.
 
-The scan, lint, workflow-audit, validation, and module-test jobs are peers and
-start in parallel; one scan job does not launch the others. The `dev-plan` job
-uses `needs` to wait for every required gate. Because that job is enabled only
-for manual dispatches from `main`, pushes and pull requests run checks without
-assuming AWS credentials.
+Before any apply role is assumed, the job confirms that `main` still points to
+the commit that produced the plan. This prevents approval of an outdated plan
+after a newer commit has been pushed. The binary plan and digest are retained
+for seven days; approve before expiration. No apply job creates a fresh plan
+or runs `terraform destroy`.
 
-The DEV plan job requires these GitHub `dev-plan` environment variables:
+The scan, lint, workflow-audit, validation, and module-test jobs are peers;
+one scan does not launch the others. The stage jobs use `needs` to wait for
+all required gates and then sequence DEV -> TEST -> PROD. The `dev-plan`,
+`test-plan`, and `prod-plan` environments must not have required reviewers;
+approval gates belong on `dev`, `test`, and `prod`.
 
-| Variable | Purpose |
-|---|---|
-| `AWS_TERRAFORM_DEV_PLAN_ROLE_ARN` | Read-only AWS role for manual DEV plans |
-| `TERRAFORM_STATE_BUCKET` | Existing S3 backend bucket name |
+## GitHub configuration
 
-The role is defined in `bootstrap/github-terraform-dev-plan` and restricted to
-the new repository/environment identity, the `main` branch, and the DEV state.
-It cannot apply resources. Configure the environment variables only after the
-role has been provisioned or updated through a separately reviewed process.
-The DEV plan uses HTTP and the ALB-provided AWS DNS name, so it does not require
-a custom domain or ACM certificate. HTTP traffic is unencrypted; do not send
-credentials or sensitive data through this demonstration endpoint. HTTPS can
-be enabled later by setting `enable_https` and providing an issued certificate
-ARN in `eu-west-1`.
+Configure these GitHub Actions **variables** before pushing a workflow update
+that enables automatic promotion:
 
-## Applying infrastructure
-
-Manual dispatch on `main` defaults to plan-only. Setting the explicit `apply`
-input enables a separate apply job targeting the GitHub `dev` environment.
-The environment currently has no required reviewer, as authorized for this
-individual project, so the apply proceeds without an independent approval.
-With `apply=false`, the run stops after uploading the plan artifact. With
-`apply=true`, the apply job starts automatically after the plan succeeds; it
-downloads that run's binary plan, verifies its SHA-256, and applies only that
-plan. It never makes a fresh plan during the apply job. Since `dev` currently
-has no required reviewer, do not set `apply=true` unless you authorize
-immediate apply. To review the generated artifact before applying, first add a
-required reviewer to the `dev` environment; the apply job will then wait for
-that approval.
-
-Before enabling apply, configure these variables in the GitHub environments:
-
-| Environment | Variable | Purpose |
+| Scope | Variable | Purpose |
 |---|---|---|
-| `dev-plan` | `AWS_TERRAFORM_DEV_PLAN_ROLE_ARN` | Read-only plan role ARN |
-| `dev-plan` and `dev` | `TERRAFORM_STATE_BUCKET` | Existing S3 backend bucket |
-| `dev` | `AWS_TERRAFORM_DEV_APPLY_ROLE_ARN` | Separately provisioned DEV apply role ARN |
+| Repository | `TERRAFORM_STATE_BUCKET` | Existing S3 backend bucket |
+| Repository | `AWS_TERRAFORM_DEV_PLAN_ROLE_ARN` | Read-only DEV plan role |
+| Repository | `AWS_TERRAFORM_TEST_PLAN_ROLE_ARN` | Read-only TEST plan role |
+| Repository | `AWS_TERRAFORM_PROD_PLAN_ROLE_ARN` | Read-only PROD plan role |
+| `dev` | `AWS_TERRAFORM_DEV_APPLY_ROLE_ARN` | DEV apply role |
+| `test` | `AWS_TERRAFORM_TEST_APPLY_ROLE_ARN` | TEST apply role |
+| `prod` | `AWS_TERRAFORM_PROD_APPLY_ROLE_ARN` | PROD apply role |
 
-The apply role is provisioned by `bootstrap/github-terraform-dev-apply`. It
-trusts only this repository's `dev` environment on `main`, uses GitHub OIDC
-(no static keys), accesses only the DEV state key and lock, and has scoped
-permissions for the Terraform-managed DEV resources. Add required reviewers
-to `dev` and protect `main` before using this for a long-lived or sensitive
-environment; without those protections, an authorized manual dispatch can
-apply changes without independent review.
+Add `drghassen` as a required reviewer for the `dev`, `test`, and `prod`
+environments. The same account can approve its own deployment unless GitHub's
+prevent-self-review control is enabled and supported for the repository. This
+is a manual gate, not independent review if the initiator is also the only
+reviewer. Protect `main` with required reviews/status checks for a stronger
+separation of duties.
 
-The plan artifact contains a Terraform binary plan and may include sensitive
-infrastructure details. It is retained for seven days; restrict repository
-access. If environment reviewers are configured later, approve the apply job
-before the artifact expires. Manual workflow runs are not canceled by later
-pushes, to avoid interrupting an apply.
-The current application-release workflows and roles were removed and must not
-be reused.
+The `dev-plan`, `test-plan`, and `prod-plan` roles are read-only for their
+matching environment state and AWS metadata. They are restricted to the new
+repository, its immutable GitHub owner/repository IDs, the matching plan
+environment, and `main`. The apply roles are separate, scoped to only their
+environment's state key and named/tagged AWS resources, and trusted only by
+the matching protected GitHub environment on `main`. All roles use GitHub
+OIDC; do not configure static AWS access keys.
 
-## Runner permissions and concurrency
+The DEV roles are maintained in
+`bootstrap/github-terraform-dev-plan` and
+`bootstrap/github-terraform-dev-apply`. The TEST/PROD plan and apply roles are
+maintained in `bootstrap/github-terraform-test-prod-plan` and
+`bootstrap/github-terraform-test-prod-apply`; each bootstrap has a separate
+Terraform state key. Review bootstrap plans before provisioning roles. These
+bootstrap roots create IAM roles and policies only, not workload resources.
 
-Plan jobs request only GitHub `contents: read` and `id-token: write`; validation
-and module-test jobs do not request AWS credentials. Apply is never triggered
-on push or pull request, and no workflow runs `terraform destroy`.
+## Checks and deployment safety
+
+The workflow runs Gitleaks, Checkov, TFLint, zizmor, recursive Terraform
+formatting and validation, and Terraform module tests. Static checks do not
+receive AWS credentials. Checkov failures are not suppressed globally;
+accepted exceptions are recorded next to affected Terraform resources and
+explained in [security decisions](./security/README.md).
+
+Each environment plan uses its committed `terraform.tfvars.example` and its
+isolated state key:
+
+| Environment | State key |
+|---|---|
+| DEV | `cloud5/infrastructure/dev/terraform.tfstate` |
+| TEST | `cloud5/infrastructure/test/terraform.tfstate` |
+| PROD | `cloud5/infrastructure/prod/terraform.tfstate` |
+
+Review the plan artifact and estimated costs before approving. TEST is
+disposable; PROD defaults include cost-bearing high-availability settings,
+including two NAT Gateways and Multi-AZ RDS. HTTP is used with the ALB's AWS
+DNS name and is unencrypted; do not send credentials or sensitive data through
+these demonstration endpoints. See [cost guidance](./costs.md).
+
+Workflow concurrency prevents simultaneous promotion runs and never cancels a
+possibly active apply. If `main` advances while a run is waiting for approval,
+cancel that older run manually so the newest run can start. If an old run
+reaches its apply job, the stale-commit checks reject it before applying.

@@ -1,5 +1,5 @@
 variable "name_prefix" {
-  description = "Prefix used to name the DEV Terraform plan role and managed infrastructure."
+  description = "Prefix used to name the environment Terraform plan role and managed infrastructure."
   type        = string
 }
 
@@ -13,8 +13,8 @@ variable "github_environment" {
   type        = string
 
   validation {
-    condition     = var.github_environment == "dev-plan"
-    error_message = "The plan role trust must use the dev-plan GitHub environment."
+    condition     = contains(["dev-plan", "test-plan", "prod-plan"], var.github_environment)
+    error_message = "The plan role must use a supported environment-specific plan environment."
   }
 }
 
@@ -64,6 +64,6 @@ variable "state_bucket_arn" {
 }
 
 variable "state_key" {
-  description = "Exact DEV state key the manual plan role may read."
+  description = "Exact environment state key the read-only plan role may read."
   type        = string
 }

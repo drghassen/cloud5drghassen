@@ -69,3 +69,65 @@ run "role_is_restricted_to_manual_main_plans" {
     error_message = "The plan role must not read secrets, pass roles, use wildcard actions, or access workload release services."
   }
 }
+
+run "role_is_scoped_to_test_environment" {
+  command = plan
+
+  variables {
+    name_prefix          = "cloud5-infra-test"
+    common_tags          = { Project = "terraform-cloud-project", Environment = "test", Owner = "drghassen", ManagedBy = "Terraform" }
+    github_environment   = "test-plan"
+    github_ref_patterns  = ["refs/heads/main"]
+    oidc_provider_arn    = "arn:aws:iam::326553917564:oidc-provider/token.actions.githubusercontent.com"
+    github_owner_id      = "128297499"
+    github_repository_id = "1473229803"
+    github_repository    = "drghassen/cloud5drghassen"
+    aws_region           = "eu-west-1"
+    aws_account_id       = "326553917564"
+    state_bucket_arn     = "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564"
+    state_key            = "cloud5/infrastructure/test/terraform.tfstate"
+  }
+
+  assert {
+    condition = (
+      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen/cloud5drghassen:environment:test-plan") &&
+      strcontains(aws_iam_role.this.assume_role_policy, "refs/heads/main") &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ReadTerraformState"]).Resource ==
+      "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/infrastructure/test/terraform.tfstate" &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ManageOnlyTerraformLock"]).Resource ==
+      "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/infrastructure/test/terraform.tfstate.tflock"
+    )
+    error_message = "The TEST plan role must trust only test-plan on main and read only TEST state."
+  }
+}
+
+run "role_is_scoped_to_prod_environment" {
+  command = plan
+
+  variables {
+    name_prefix          = "cloud5-infra-prod"
+    common_tags          = { Project = "terraform-cloud-project", Environment = "prod", Owner = "drghassen", ManagedBy = "Terraform" }
+    github_environment   = "prod-plan"
+    github_ref_patterns  = ["refs/heads/main"]
+    oidc_provider_arn    = "arn:aws:iam::326553917564:oidc-provider/token.actions.githubusercontent.com"
+    github_owner_id      = "128297499"
+    github_repository_id = "1473229803"
+    github_repository    = "drghassen/cloud5drghassen"
+    aws_region           = "eu-west-1"
+    aws_account_id       = "326553917564"
+    state_bucket_arn     = "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564"
+    state_key            = "cloud5/infrastructure/prod/terraform.tfstate"
+  }
+
+  assert {
+    condition = (
+      strcontains(aws_iam_role.this.assume_role_policy, "repo:drghassen/cloud5drghassen:environment:prod-plan") &&
+      strcontains(aws_iam_role.this.assume_role_policy, "refs/heads/main") &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ReadTerraformState"]).Resource ==
+      "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/infrastructure/prod/terraform.tfstate" &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ManageOnlyTerraformLock"]).Resource ==
+      "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/infrastructure/prod/terraform.tfstate.tflock"
+    )
+    error_message = "The PROD plan role must trust only prod-plan on main and read only PROD state."
+  }
+}

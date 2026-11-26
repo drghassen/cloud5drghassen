@@ -31,7 +31,11 @@ bootstrap/                  S3 remote-state bucket
 bootstrap/github-terraform-dev-plan/
                             Read-only OIDC role for DEV plans
 bootstrap/github-terraform-dev-apply/
-                            Scoped OIDC role for explicit DEV applies
+                            Scoped OIDC role for DEV applies
+bootstrap/github-terraform-test-prod-plan/
+                            Read-only OIDC roles for TEST and PROD plans
+bootstrap/github-terraform-test-prod-apply/
+                            Scoped OIDC roles for TEST and PROD applies
 modules/
   network/                  VPC, subnets, gateways, and routes
   security/                 Security groups and EC2 instance role
@@ -41,7 +45,7 @@ modules/
   storage/                  Private versioned and encrypted S3 bucket
 environments/{dev,test,prod}/
                             Environment roots and separate S3 state keys
-.github/workflows/          Terraform validation, tests, plan, gated DEV apply
+.github/workflows/          Scans, validation, and gated DEV -> TEST -> PROD promotion
 docs/                       Architecture, deployment, cost, and security notes
 scripts/                    Local validation and backend initialization
 ```
@@ -85,11 +89,11 @@ terraform -chdir=environments\dev show -no-color dev.tfplan
 
 The first deployment creates cost-bearing resources. Do not apply until the
 complete plan, AWS account, region, resource names, and estimated costs have
-been reviewed and explicitly approved. The GitHub workflow supports manual
-plan-only runs on `main`; applying requires a separately provisioned,
-reviewed DEV OIDC role. The GitHub `dev` environment currently has no required
-reviewer; configure one before using this for sensitive workloads. See
-[CI/CD guidance](docs/dev-release-pipeline.md).
+been reviewed and explicitly approved. Pushes to `main` run static checks and
+then promote DEV -> TEST -> PROD; each apply waits for its protected GitHub
+environment approval and uses only the plan created in that workflow run.
+Provision the scoped OIDC roles and configure reviewers before enabling the
+deployment workflow. See [CI/CD guidance](docs/dev-release-pipeline.md).
 
 DEV, TEST, and PROD use HTTP with the ALB's AWS-provided DNS name, so no
 custom domain or ACM certificate is required. HTTP is unencrypted; do not send
@@ -107,9 +111,9 @@ Run local checks:
 
 The workflow runs `terraform fmt`, initializes and validates each root, and
 runs module tests without AWS changes. Pull requests run only these static
-checks and scans; a read-only DEV plan is available only through manual
-dispatch from `main`. A manual run is plan-only by default; applying requires
-an explicit input and protected environment approval.
+checks and scans without AWS credentials. On `main`, all environment stages
+start automatically after every scan, validation, and module-test gate passes.
+Each apply pauses for approval in its matching protected GitHub environment.
 
 ## Costs and cleanup
 

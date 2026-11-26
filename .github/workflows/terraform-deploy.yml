@@ -1,0 +1,222 @@
+name: terraform-deploy
+
+"on":
+  workflow_call:
+    inputs:
+      environment:
+        description: Terraform environment to apply (dev, test, or prod).
+        required: true
+        type: string
+      plan_sha256:
+        description: SHA-256 digest published by the plan job in this workflow run.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Validate ${{ inputs.environment }} apply request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.target.outputs.accepted }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Accept only one known environment
+        id: target
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            dev|test|prod) ;;
+            *)
+              echo "Unsupported apply environment." >&2
+              exit 1
+              ;;
+          esac
+          printf '%s\n' "$PLAN_SHA256" | grep -Eq '^[a-f0-9]{64}$' || {
+            echo "The plan job did not publish a SHA-256 digest." >&2
+            exit 1
+          }
+          echo "accepted=true" >> "$GITHUB_OUTPUT"
+
+  apply:
+    name: Apply ${{ inputs.environment }}
+    needs: guard
+    if: needs.guard.outputs.accepted == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment == 'dev' && 'dev' || inputs.environment == 'test' && 'test' || inputs.environment == 'prod' && 'prod' }}
+    timeout-minutes: 120
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Reject untrusted deployment context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          JOB_WORKFLOW_FILE: ${{ job.workflow_file_path }}
+          EXPECTED_JOB_WORKFLOW_FILE: .github/workflows/terraform-deploy.yml
+        run: python3 scripts/gha/assert_deployment_context.py
+
+      - name: Require the protected apply role and state bucket
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          APPLY_ROLE: ${{ inputs.environment == 'dev' && vars.AWS_TERRAFORM_DEV_APPLY_ROLE_ARN || inputs.environment == 'test' && vars.AWS_TERRAFORM_TEST_APPLY_ROLE_ARN || inputs.environment == 'prod' && vars.AWS_TERRAFORM_PROD_APPLY_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          AWS_REGION: eu-west-1
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            dev) role_name="AWS_TERRAFORM_DEV_APPLY_ROLE_ARN" ;;
+            test) role_name="AWS_TERRAFORM_TEST_APPLY_ROLE_ARN" ;;
+            prod) role_name="AWS_TERRAFORM_PROD_APPLY_ROLE_ARN" ;;
+            *) echo "Unsupported apply environment." >&2; exit 1 ;;
+          esac
+          test -n "$APPLY_ROLE" || {
+            echo "$role_name is required in the protected ${ENVIRONMENT} environment." >&2
+            exit 1
+          }
+          python3 scripts/gha/assert_backend_target.py
+
+      - name: Download the plan produced by this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: terraform-${{ inputs.environment }}-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/approved-plan
+
+      - name: Verify plan identity, digest, and commit
+        env:
+          PLAN_DIR: ${{ runner.temp }}/approved-plan
+          ENVIRONMENT: ${{ inputs.environment }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          EXPECTED_SHA256: ${{ inputs.plan_sha256 }}
+        run: python3 scripts/gha/plan_artifact.py verify
+
+      - name: Reject a stale plan if main has advanced
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/gha/assert_main_unchanged.py
+
+      - name: Assume the protected apply role with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ inputs.environment == 'dev' && vars.AWS_TERRAFORM_DEV_APPLY_ROLE_ARN || inputs.environment == 'test' && vars.AWS_TERRAFORM_TEST_APPLY_ROLE_ARN || inputs.environment == 'prod' && vars.AWS_TERRAFORM_PROD_APPLY_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: terraform-${{ inputs.environment }}-apply
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.15.8
+
+      - name: Initialize environment state
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          AWS_REGION: eu-west-1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gha/assert_backend_target.py
+          terraform -chdir="environments/$ENVIRONMENT" init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Recheck main immediately before apply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/gha/assert_main_unchanged.py
+
+      - name: Apply only the plan created in this workflow run
+        id: apply
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            dev|test|prod) ;;
+            *) echo "Unsupported apply environment." >&2; exit 1 ;;
+          esac
+          terraform -chdir="environments/$ENVIRONMENT" apply -input=false \
+            "$RUNNER_TEMP/approved-plan/$ENVIRONMENT.tfplan"
+
+      - name: Publish deployment report
+        if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/deploy-report"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = {
+              "environment": os.environ["ENVIRONMENT"],
+              "repository": "drghassen/cloud5drghassen",
+              "commit": os.environ["COMMIT"],
+              "run_id": os.environ["RUN_ID"],
+              "run_attempt": os.environ["RUN_ATTEMPT"],
+              "plan_sha256": os.environ["PLAN_SHA256"],
+              "apply_outcome": os.environ["APPLY_OUTCOME"],
+          }
+          Path(os.environ["RUNNER_TEMP"], "deploy-report", "deploy-report.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          {
+            echo "## Terraform apply (${ENVIRONMENT})"
+            echo
+            echo "- Result: \`${APPLY_OUTCOME}\`"
+            echo "- Commit: \`${COMMIT}\`"
+            echo "- SHA-256: \`${PLAN_SHA256}\`"
+            echo "- Run: \`${RUN_ID}\` attempt \`${RUN_ATTEMPT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deployment report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-${{ inputs.environment }}-deploy-report-${{ github.run_id }}
+          path: ${{ runner.temp }}/deploy-report/deploy-report.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30

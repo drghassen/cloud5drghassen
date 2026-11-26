@@ -1,5 +1,5 @@
 variable "name_prefix" {
-  description = "Prefix used to name the DEV role and its managed resources."
+  description = "Prefix used to name the environment role and its managed resources."
   type        = string
 }
 
@@ -18,8 +18,8 @@ variable "environment" {
   type        = string
 
   validation {
-    condition     = var.environment == "dev"
-    error_message = "This module instance provisions the DEV apply role only."
+    condition     = contains(["dev", "test", "prod"], var.environment)
+    error_message = "The apply role supports only dev, test, or prod environments."
   }
 }
 
@@ -28,8 +28,8 @@ variable "github_environment" {
   type        = string
 
   validation {
-    condition     = var.github_environment == "dev"
-    error_message = "The apply role trust must use the dev GitHub environment."
+    condition     = var.github_environment == var.environment
+    error_message = "The apply role trust must use the matching GitHub deployment environment."
   }
 }
 
@@ -54,7 +54,7 @@ variable "github_repository" {
 }
 
 variable "aws_region" {
-  description = "Region containing the DEV infrastructure."
+  description = "Region containing the environment infrastructure."
   type        = string
 }
 
@@ -69,6 +69,6 @@ variable "state_bucket_arn" {
 }
 
 variable "state_key" {
-  description = "Exact DEV Terraform state key the role may update."
+  description = "Exact environment Terraform state key the role may update."
   type        = string
 }

@@ -11,7 +11,7 @@ echo "=== Terraform formatting ==="
 terraform fmt -check -recursive
 
 echo "=== Terraform root validation ==="
-for d in bootstrap bootstrap/github-terraform-dev-plan bootstrap/github-terraform-dev-apply environments/dev environments/test environments/prod; do
+for d in bootstrap bootstrap/github-terraform-dev-plan bootstrap/github-terraform-dev-apply bootstrap/github-terraform-test-prod-plan bootstrap/github-terraform-test-prod-apply environments/dev environments/test environments/prod; do
   terraform -chdir="$d" init -backend=false -input=false
   terraform -chdir="$d" validate
 done

@@ -60,26 +60,26 @@ resource "aws_iam_role" "this" {
 }
 
 resource "aws_iam_role_policy" "this" {
-  name = "${local.role_name}-dev-infrastructure"
+  name = "${local.role_name}-${var.environment}-infrastructure"
   role = aws_iam_role.this.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ReadAndWriteOnlyDevState"
+        Sid      = "ReadAndWriteOnly${title(var.environment)}State"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject"]
         Resource = local.state_object_arn
       },
       {
-        Sid      = "ManageOnlyDevStateLock"
+        Sid      = "ManageOnly${title(var.environment)}StateLock"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
         Resource = local.state_lock_arn
       },
       {
-        Sid      = "ListOnlyDevStateAndLock"
+        Sid      = "ListOnly${title(var.environment)}StateAndLock"
         Effect   = "Allow"
         Action   = ["s3:ListBucket"]
         Resource = var.state_bucket_arn
