@@ -11,6 +11,11 @@ variable "common_tags" {
 variable "project_name" {
   description = "Project tag required for EC2 resource creation."
   type        = string
+
+  validation {
+    condition     = var.project_name == "terraform-cloud-project"
+    error_message = "The Project tag must be terraform-cloud-project."
+  }
 }
 
 variable "environment" {

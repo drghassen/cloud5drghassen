@@ -59,3 +59,9 @@ dist/
 # Build artifacts
 coverage/
 build/
+
+# Additional Terraform sensitive plan files
+tfplan-*
+*.tfplan.json
+tfplan.sha256
+plan.json

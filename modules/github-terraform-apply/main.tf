@@ -21,16 +21,6 @@ locals {
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*"
   ]
 
-  launch_resource_arns = [
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*",
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*",
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*",
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:subnet/*",
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:network-interface/*",
-    "arn:aws:ec2:${var.aws_region}::image/*"
-  ]
-
   load_balancer_resource_arns = [
     "arn:aws:elasticloadbalancing:${var.aws_region}:${var.aws_account_id}:loadbalancer/app/${var.name_prefix}-alb/*",
     "arn:aws:elasticloadbalancing:${var.aws_region}:${var.aws_account_id}:targetgroup/${var.name_prefix}-web-tg/*",
@@ -74,10 +64,13 @@ resource "aws_iam_role" "this" {
 resource "aws_iam_role_policy" "this" {
   name = "${local.role_name}-${var.environment}-infrastructure"
   role = aws_iam_role.this.id
+  # Attach the narrower create-time tagging policy before updating the inline
+  # policy. Old live permissions remain effective until the update succeeds.
+  depends_on = [aws_iam_role_policy_attachment.create_tags]
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid      = "ReadAndWriteOnly${title(var.environment)}State"
         Effect   = "Allow"
@@ -106,6 +99,12 @@ resource "aws_iam_role_policy" "this" {
         Effect   = "Allow"
         Action   = ["s3:GetBucketLocation", "s3:GetBucketVersioning"]
         Resource = var.state_bucket_arn
+      },
+      {
+        Sid      = "ReadEnvironmentPlanVersion"
+        Effect   = "Allow"
+        Action   = ["s3:GetObjectVersion"]
+        Resource = "${var.state_bucket_arn}/cloud5/ci-plans/v1/${var.environment}/*"
       },
       {
         Sid    = "ReadRegionalInfrastructure"
@@ -194,15 +193,29 @@ resource "aws_iam_role_policy" "this" {
           "ec2:CreateRouteTable",
           "ec2:CreateSecurityGroup",
           "ec2:CreateSubnet",
-          "ec2:CreateTags",
           "ec2:CreateVpc"
         ]
         Resource = local.ec2_resource_arns
         Condition = {
           StringEquals = {
             "aws:RequestedRegion"        = var.aws_region
+            "aws:RequestTag/Owner"       = "drghassen"
             "aws:RequestTag/Project"     = var.project_name
             "aws:RequestTag/Environment" = var.environment
+          }
+        }
+      },
+      {
+        Sid      = "UseOwnedVpcForChildCreation"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateSubnet", "ec2:CreateRouteTable", "ec2:CreateSecurityGroup"]
+        Resource = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:vpc/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion"         = var.aws_region
+            "aws:ResourceTag/Owner"       = "drghassen"
+            "aws:ResourceTag/Project"     = var.project_name
+            "aws:ResourceTag/Environment" = var.environment
           }
         }
       },
@@ -239,6 +252,7 @@ resource "aws_iam_role_policy" "this" {
         Condition = {
           StringEquals = {
             "aws:RequestedRegion"         = var.aws_region
+            "aws:ResourceTag/Owner"       = "drghassen"
             "aws:ResourceTag/Project"     = var.project_name
             "aws:ResourceTag/Environment" = var.environment
           }
@@ -248,7 +262,6 @@ resource "aws_iam_role_policy" "this" {
         Sid    = "CreateAndManageProjectLoadBalancer"
         Effect = "Allow"
         Action = [
-          "elasticloadbalancing:AddTags",
           "elasticloadbalancing:CreateListener",
           "elasticloadbalancing:CreateLoadBalancer",
           "elasticloadbalancing:CreateTargetGroup",
@@ -260,7 +273,6 @@ resource "aws_iam_role_policy" "this" {
           "elasticloadbalancing:ModifyLoadBalancerAttributes",
           "elasticloadbalancing:ModifyTargetGroup",
           "elasticloadbalancing:ModifyTargetGroupAttributes",
-          "elasticloadbalancing:RemoveTags",
           "elasticloadbalancing:SetSecurityGroups",
           "elasticloadbalancing:SetSubnets"
         ]
@@ -275,13 +287,9 @@ resource "aws_iam_role_policy" "this" {
         Sid    = "CreateAndManageProjectAutoScaling"
         Effect = "Allow"
         Action = [
-          "autoscaling:CreateAutoScalingGroup",
-          "autoscaling:CreateOrUpdateTags",
           "autoscaling:DeleteAutoScalingGroup",
-          "autoscaling:DeleteTags",
           "autoscaling:PutScalingPolicy",
-          "autoscaling:DeletePolicy",
-          "autoscaling:UpdateAutoScalingGroup"
+          "autoscaling:DeletePolicy"
         ]
         Resource = [local.auto_scaling_group_arn, local.auto_scaling_policy_arn]
         Condition = {
@@ -294,15 +302,13 @@ resource "aws_iam_role_policy" "this" {
         Sid    = "CreateAndManageProjectDatabase"
         Effect = "Allow"
         Action = [
-          "rds:AddTagsToResource",
           "rds:CreateDBInstance",
           "rds:CreateDBSubnetGroup",
           "rds:DeleteDBInstance",
           "rds:DeleteDBSubnetGroup",
           "rds:ModifyDBInstance",
           "rds:ModifyDBSubnetGroup",
-          "rds:ListTagsForResource",
-          "rds:RemoveTagsFromResource"
+          "rds:ListTagsForResource"
         ]
         Resource = [local.db_instance_arn, local.db_subnet_group_arn]
         Condition = {
@@ -312,31 +318,37 @@ resource "aws_iam_role_policy" "this" {
         }
       },
       {
-        Sid    = "ManageProjectInstanceIam"
-        Effect = "Allow"
-        Action = [
-          "iam:CreateInstanceProfile",
-          "iam:DeleteInstanceProfile",
-          "iam:AddRoleToInstanceProfile",
-          "iam:RemoveRoleFromInstanceProfile",
-          "iam:TagInstanceProfile",
-          "iam:UntagInstanceProfile",
-          "iam:CreateRole",
-          "iam:DeleteRole",
-          "iam:TagRole",
-          "iam:UntagRole",
-          "iam:UpdateAssumeRolePolicy"
-        ]
-        Resource = [local.instance_role_arn, local.instance_profile_arn]
+        Sid       = "CreateRdsManagedSecret"
+        Effect    = "Allow"
+        Action    = ["secretsmanager:CreateSecret", "secretsmanager:TagResource"]
+        Resource  = "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:rds!db-*"
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region } }
       },
       {
-        Sid    = "AttachOnlySsmPolicyToProjectInstanceRole"
-        Effect = "Allow"
-        Action = ["iam:AttachRolePolicy", "iam:DetachRolePolicy"]
-        Resource = [
-          local.instance_role_arn,
-          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-        ]
+        Sid      = "DescribeSecretsManagerKey"
+        Effect   = "Allow"
+        Action   = ["kms:DescribeKey"]
+        Resource = "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/*"
+        Condition = {
+          StringEquals               = { "aws:RequestedRegion" = var.aws_region }
+          "ForAnyValue:StringEquals" = { "kms:ResourceAliases" = "alias/aws/secretsmanager" }
+        }
+      },
+      {
+        Sid      = "AttachOnlySsmPolicyToProjectInstanceRole"
+        Effect   = "Allow"
+        Action   = ["iam:AttachRolePolicy", "iam:DetachRolePolicy"]
+        Resource = local.instance_role_arn
+        Condition = {
+          ArnEquals = {
+            "iam:PolicyARN" = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+          }
+          StringEquals = {
+            "aws:ResourceTag/Owner"       = "drghassen"
+            "aws:ResourceTag/Project"     = var.project_name
+            "aws:ResourceTag/Environment" = var.environment
+          }
+        }
       },
       {
         Sid      = "PassOnlyProjectInstanceRoleToEc2"
@@ -362,7 +374,6 @@ resource "aws_iam_role_policy" "this" {
           "s3:PutBucketOwnershipControls",
           "s3:PutEncryptionConfiguration",
           "s3:PutLifecycleConfiguration",
-          "s3:PutBucketTagging",
           "s3:PutBucketVersioning"
         ]
         Resource = local.storage_bucket_arn
@@ -389,25 +400,168 @@ resource "aws_iam_role_policy" "this" {
         }
       },
       {
-        Sid    = "AllowLaunchTemplateRunInstances"
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateTags",
-          "ec2:RunInstances"
-        ]
-        Resource = local.launch_resource_arns
-        Condition = {
-          StringEquals = {
-            "aws:RequestedRegion" = var.aws_region
-          }
-        }
-      },
-      {
         Sid      = "ReadCallerIdentity"
         Effect   = "Allow"
         Action   = ["sts:GetCallerIdentity"]
         Resource = "*"
       }
+      ], var.environment == "dev" ? [{
+        Sid      = "WriteDevDiagnostics"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${var.state_bucket_arn}/cloud5/ci-diagnostics/v1/dev/*"
+        Condition = {
+          StringEquals = { "s3:x-amz-server-side-encryption" = "AES256" }
+        }
+    }] : [])
+  })
+}
+
+resource "aws_iam_policy" "create_tags" {
+  name = "${local.role_name}-ec2-create-tags"
+  tags = var.common_tags
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "TagEc2OnlyDuringApprovedCreation"
+      Effect   = "Allow"
+      Action   = ["ec2:CreateTags"]
+      Resource = local.ec2_resource_arns
+      Condition = {
+        StringEquals = {
+          "aws:RequestedRegion"        = var.aws_region
+          "aws:RequestTag/Owner"       = "drghassen"
+          "aws:RequestTag/Project"     = var.project_name
+          "aws:RequestTag/Environment" = var.environment
+          "ec2:CreateAction" = [
+            "AllocateAddress", "CreateInternetGateway", "CreateLaunchTemplate", "CreateNatGateway",
+            "CreateRouteTable", "CreateSecurityGroup", "CreateSubnet", "CreateVpc"
+          ]
+        }
+      }
+      },
+      {
+        Sid    = "LaunchTaggedInstancesAndVolumes"
+        Effect = "Allow"
+        Action = ["ec2:RunInstances"]
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*"
+        ]
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion"        = var.aws_region
+            "aws:RequestTag/Owner"       = "drghassen"
+            "aws:RequestTag/Project"     = var.project_name
+            "aws:RequestTag/Environment" = var.environment
+          }
+          ArnLike = { "ec2:LaunchTemplate" = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*" }
+        }
+      },
+      {
+        Sid      = "LaunchUsingOwnedDependencies"
+        Effect   = "Allow"
+        Action   = ["ec2:RunInstances"]
+        Resource = [for t in ["launch-template", "subnet", "security-group"] : "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:${t}/*"]
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion"         = var.aws_region
+            "aws:ResourceTag/Owner"       = "drghassen"
+            "aws:ResourceTag/Project"     = var.project_name
+            "aws:ResourceTag/Environment" = var.environment
+          }
+          ArnLike = { "ec2:LaunchTemplate" = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*" }
+        }
+      },
+      {
+        Sid      = "LaunchAmazonImage"
+        Effect   = "Allow"
+        Action   = ["ec2:RunInstances"]
+        Resource = "arn:aws:ec2:${var.aws_region}::image/*"
+        Condition = {
+          StringEquals = { "aws:RequestedRegion" = var.aws_region, "ec2:Owner" = "amazon" }
+          ArnLike      = { "ec2:LaunchTemplate" = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*" }
+        }
+      },
+      {
+        Sid      = "LaunchPrivateNetworkInterface"
+        Effect   = "Allow"
+        Action   = ["ec2:RunInstances"]
+        Resource = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:network-interface/*"
+        Condition = {
+          StringEquals = { "aws:RequestedRegion" = var.aws_region }
+          ArnLike      = { "ec2:LaunchTemplate" = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*" }
+          Bool         = { "ec2:AssociatePublicIpAddress" = "false" }
+        }
+      },
+      {
+        Sid       = "RequireImdsV2"
+        Effect    = "Deny"
+        Action    = ["ec2:RunInstances"]
+        Resource  = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*"
+        Condition = { StringNotEquals = { "ec2:MetadataHttpTokens" = "required" } }
+      },
+      {
+        Sid      = "TagNewInstanceVolumeAndRules"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateTags"]
+        Resource = [for t in ["instance", "volume", "security-group-rule"] : "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:${t}/*"]
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion"        = var.aws_region
+            "aws:RequestTag/Owner"       = "drghassen"
+            "aws:RequestTag/Project"     = var.project_name
+            "aws:RequestTag/Environment" = var.environment
+            "ec2:CreateAction"           = ["RunInstances", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]
+          }
+        }
+      },
+      {
+        Sid      = "CreateAutoScalingWithNumericTemplate"
+        Effect   = "Allow"
+        Action   = ["autoscaling:CreateAutoScalingGroup"]
+        Resource = local.auto_scaling_group_arn
+        Condition = {
+          StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:RequestTag/Owner" = "drghassen", "aws:RequestTag/Project" = var.project_name, "aws:RequestTag/Environment" = var.environment }
+          Bool         = { "autoscaling:LaunchTemplateVersionSpecified" = "true" }
+        }
+      },
+      {
+        Sid      = "UpdateAutoScalingWithNumericTemplate"
+        Effect   = "Allow"
+        Action   = ["autoscaling:UpdateAutoScalingGroup"]
+        Resource = local.auto_scaling_group_arn
+        Condition = {
+          StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:ResourceTag/Owner" = "drghassen", "aws:ResourceTag/Project" = var.project_name, "aws:ResourceTag/Environment" = var.environment }
+          BoolIfExists = { "autoscaling:LaunchTemplateVersionSpecified" = "true" }
+        }
+      },
+      {
+        Sid       = "TagProjectAutoScaling"
+        Effect    = "Allow"
+        Action    = ["autoscaling:CreateOrUpdateTags"]
+        Resource  = local.auto_scaling_group_arn
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:RequestTag/Owner" = "drghassen", "aws:RequestTag/Project" = var.project_name, "aws:RequestTag/Environment" = var.environment } }
+      },
+      {
+        Sid       = "TagLoadBalancerOnCreation"
+        Effect    = "Allow"
+        Action    = ["elasticloadbalancing:AddTags"]
+        Resource  = local.load_balancer_resource_arns
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "elasticloadbalancing:CreateAction" = ["CreateLoadBalancer", "CreateTargetGroup", "CreateListener"] } }
+      },
+      {
+        Sid       = "TagNamedDatabase"
+        Effect    = "Allow"
+        Action    = ["rds:AddTagsToResource"]
+        Resource  = [local.db_instance_arn, local.db_subnet_group_arn]
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:RequestTag/Owner" = "drghassen", "aws:RequestTag/Project" = var.project_name, "aws:RequestTag/Environment" = var.environment } }
+      }
     ]
   })
+}
+
+resource "aws_iam_role_policy_attachment" "create_tags" {
+  role       = aws_iam_role.this.name
+  policy_arn = aws_iam_policy.create_tags.arn
 }
