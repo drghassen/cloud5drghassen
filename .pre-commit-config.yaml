@@ -19,7 +19,7 @@ repos:
     hooks:
       - id: checkov
         name: Checkov
-        entry: checkov -d .
+        entry: python scripts/gha/check_checkov.py
         language: python
         additional_dependencies:
           - checkov==3.4.11

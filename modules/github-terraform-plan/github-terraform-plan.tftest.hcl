@@ -49,6 +49,15 @@ run "role_is_restricted_to_main_and_pr_plans" {
 
   assert {
     condition = (
+      one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "WriteEncryptedEnvironmentPlans"]).Resource == "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/ci-plans/v1/dev/*" &&
+      one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "WriteEncryptedEnvironmentPlans"]).Action == ["s3:PutObject"] &&
+      one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "WriteEncryptedEnvironmentPlans"]).Condition.StringEquals["s3:x-amz-server-side-encryption"] == "AES256"
+    )
+    error_message = "The DEV plan handoff must allow only encrypted writes to its own prefix."
+  }
+
+  assert {
+    condition = (
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ReadRegionalInfrastructure"]).Resource == "*" &&
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ReadRegionalInfrastructure"]).Condition.StringEquals["aws:RequestedRegion"] == "eu-west-1" &&
       alltrue([

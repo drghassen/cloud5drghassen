@@ -83,17 +83,15 @@ Review a plan before any apply:
 
 ```powershell
 terraform -chdir=environments\dev validate
-terraform -chdir=environments\dev plan -out=dev.tfplan
+terraform -chdir=environments\dev plan -var-file=terraform.tfvars.example -out=dev.tfplan
 terraform -chdir=environments\dev show -no-color dev.tfplan
 ```
 
 The first deployment creates cost-bearing resources. Do not apply until the
 complete plan, AWS account, region, resource names, and estimated costs have
-been reviewed and explicitly approved. Pushes to `main` run static checks and
-then promote DEV -> TEST -> PROD; each apply waits for its protected GitHub
-environment approval and uses only the plan created in that workflow run.
-Provision the scoped OIDC roles and configure reviewers before enabling the
-deployment workflow. See [CI/CD guidance](docs/dev-release-pipeline.md).
+been reviewed and explicitly approved. The workflow is disabled while its
+private S3 handoff and deployment safeguards are reviewed. See
+[CI/CD guidance](docs/dev-release-pipeline.md).
 
 DEV, TEST, and PROD use HTTP with the ALB's AWS-provided DNS name, so no
 custom domain or ACM certificate is required. HTTP is unencrypted; do not send
@@ -110,12 +108,10 @@ Run local checks:
 ```
 
 The workflow runs security/lint scans (Gitleaks, Checkov, TFLint, zizmor) and
-module tests without AWS credentials. Pull requests run these checks plus
-read-only `terraform fmt -check -recursive`, `init`, `validate`, and `plan`
-(`tfplan` and `plan.txt`) for `dev`, `test`, and `prod`, without applying. On
-`main`, promotion proceeds through `dev`, `test` (manual approval), and `prod`
-(mandatory manual approval), or targets a single environment via
-`workflow_dispatch`.
+module tests without AWS credentials. Pull requests run static checks without
+access to AWS state. Plans run from `main` using OIDC; handoff is private,
+disabled per environment by default, and Apply requires manual dispatch and
+environment approval. TEST and PROD retain their approval environments.
 
 ## Costs and cleanup
 

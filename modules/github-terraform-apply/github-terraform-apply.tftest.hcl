@@ -42,6 +42,23 @@ run "role_is_restricted_to_dev_main" {
 
   assert {
     condition = (
+      one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ReadEnvironmentPlanVersion"]).Resource == "arn:aws:s3:::cloud5-terraform-drghassen-state-326553917564/cloud5/ci-plans/v1/dev/*" &&
+      one([for s in jsondecode(aws_iam_role_policy.this.policy).Statement : s if s.Sid == "ReadEnvironmentPlanVersion"]).Action == ["s3:GetObjectVersion"]
+    )
+    error_message = "The DEV apply role may only read plan versions from its own prefix."
+  }
+
+  assert {
+    condition = (
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "AttachOnlySsmPolicyToProjectInstanceRole"]).Resource == "arn:aws:iam::326553917564:role/cloud5-infra-dev-web-instance-role" &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "AttachOnlySsmPolicyToProjectInstanceRole"]).Condition.ArnEquals["iam:PolicyARN"] == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" &&
+      toset(one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "AttachOnlySsmPolicyToProjectInstanceRole"]).Action) == toset(["iam:AttachRolePolicy", "iam:DetachRolePolicy"])
+    )
+    error_message = "Attaching or detaching a role policy must be limited to SSM on the exact project instance role."
+  }
+
+  assert {
+    condition = (
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "PassOnlyProjectInstanceRoleToEc2"]).Resource ==
       "arn:aws:iam::326553917564:role/cloud5-infra-dev-web-instance-role" &&
       contains(
@@ -71,9 +88,15 @@ run "role_is_restricted_to_dev_main" {
   assert {
     condition = (
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "CreateTaggedEc2Resources"]).Condition.StringEquals["aws:RequestTag/Environment"] == "dev" &&
-      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ManageTaggedEc2Resources"]).Condition.StringEquals["aws:ResourceTag/Environment"] == "dev"
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "CreateTaggedEc2Resources"]).Condition.StringEquals["aws:RequestTag/Owner"] == "drghassen" &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ManageTaggedEc2Resources"]).Condition.StringEquals["aws:ResourceTag/Environment"] == "dev" &&
+      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "ManageTaggedEc2Resources"]).Condition.StringEquals["aws:ResourceTag/Owner"] == "drghassen" &&
+      !strcontains(aws_iam_role_policy.this.policy, "ec2:CreateTags") &&
+      !strcontains(aws_iam_role_policy.this.policy, "ec2:RunInstances") &&
+      one([for statement in jsondecode(aws_iam_policy.create_tags.policy).Statement : statement if statement.Sid == "TagEc2OnlyDuringApprovedCreation"]).Condition.StringEquals["aws:RequestTag/Owner"] == "drghassen" &&
+      contains(one([for statement in jsondecode(aws_iam_policy.create_tags.policy).Statement : statement if statement.Sid == "TagEc2OnlyDuringApprovedCreation"]).Condition.StringEquals["ec2:CreateAction"], "CreateVpc")
     )
-    error_message = "EC2 create and mutation permissions must be restricted to DEV-tagged resources."
+    error_message = "EC2 permissions must enforce owner and environment and limit tagging to creation."
   }
 
   assert {

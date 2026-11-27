@@ -24,6 +24,11 @@ variable "project_name" {
   description = "Project tag applied to resources."
   type        = string
   default     = "terraform-cloud-project"
+
+  validation {
+    condition     = var.project_name == "terraform-cloud-project"
+    error_message = "The Project tag must be terraform-cloud-project."
+  }
 }
 
 variable "resource_name_prefix" {
@@ -41,6 +46,11 @@ variable "owner" {
   description = "Owner tag value."
   type        = string
   default     = "drghassen"
+
+  validation {
+    condition     = var.owner == "drghassen"
+    error_message = "The resource owner must be drghassen."
+  }
 }
 
 variable "vpc_cidr" {

@@ -15,6 +15,8 @@
 #   Ne PAS exécuter terraform apply ici contre AWS.
 #   Ne PAS importer de ressource AWS existante automatiquement.
 
+data "aws_caller_identity" "current" {}
+
 locals {
   # Le nom du bucket inclut l'ID de compte pour l'unicité globale S3.
   # Après provisionnement, passer le nom à scripts/init-env.sh comme argument.
@@ -123,7 +125,7 @@ resource "aws_s3_bucket_policy" "state" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         # Refus de toute requête en transit non chiffré (HTTP).
         Sid       = "DenyInsecureTransport"
@@ -140,7 +142,81 @@ resource "aws_s3_bucket_policy" "state" {
           }
         }
       },
-    ]
+      ], [for environment in ["dev", "test", "prod"] : {
+        Sid       = "DenyOtherPrincipals${title(environment)}Plans"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-plans/v1/${environment}/*"
+        Condition = {
+          StringNotEquals = {
+            "aws:PrincipalArn" = [
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.owner}",
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-plan",
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-apply"
+            ]
+          }
+        }
+        }], [for environment in ["dev", "test", "prod"] : {
+        Sid       = "DenyPlanRoleReading${title(environment)}Plans"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-plans/v1/${environment}/*"
+        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-plan" } }
+        }], [for environment in ["dev", "test", "prod"] : {
+        Sid       = "DenyApplyRoleWriting${title(environment)}Plans"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-plans/v1/${environment}/*"
+        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-apply" } }
+      }], [
+      {
+        Sid       = "DenyOtherPrincipalsDevDiagnostics"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/dev/*"
+        Condition = {
+          StringNotEquals = {
+            "aws:PrincipalArn" = [
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.owner}",
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-dev-github-terraform-apply"
+            ]
+          }
+        }
+      },
+      {
+        Sid       = "DenyDevApplyReadingOrDeletingDiagnostics"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = ["s3:GetObject", "s3:GetObjectVersion", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/dev/*"
+        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-dev-github-terraform-apply" } }
+      },
+      {
+        Sid       = "DenyDevDiagnosticsWithoutSseS3"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/dev/*"
+        Condition = { StringNotEquals = { "s3:x-amz-server-side-encryption" = "AES256" } }
+      },
+      {
+        Sid       = "DenyDevApplyOtherEnvironmentDiagnostics"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/test/*",
+          "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/prod/*"
+        ]
+        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-dev-github-terraform-apply" } }
+      }
+    ])
   })
 
   depends_on = [aws_s3_bucket_public_access_block.state]
@@ -179,6 +255,35 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
     # Supprimer les multiparts incomplets après 7 jours.
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
+    }
+  }
+
+  # Separate prefix only: the existing state-retention rule remains unchanged.
+  rule {
+    id     = "expire-ci-plan-versions"
+    status = "Enabled"
+    filter {
+      prefix = "cloud5/ci-plans/v1/"
+    }
+    expiration {
+      days = 7
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
+  rule {
+    id     = "expire-dev-ci-diagnostics"
+    status = "Enabled"
+    filter {
+      prefix = "cloud5/ci-diagnostics/v1/dev/"
+    }
+    expiration {
+      days = 7
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 1
     }
   }
 }

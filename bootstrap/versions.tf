@@ -18,11 +18,6 @@ provider "aws" {
   region = var.aws_region
 
   default_tags {
-    tags = {
-      Project   = var.project_name
-      Owner     = var.owner
-      ManagedBy = "Terraform"
-      Component = "terraform-state-backend"
-    }
+    tags = local.common_tags
   }
 }

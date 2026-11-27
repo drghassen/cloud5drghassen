@@ -44,6 +44,11 @@ variable "owner" {
   description = "Identifiant du propriétaire des ressources de backend."
   type        = string
   default     = "drghassen"
+
+  validation {
+    condition     = var.owner == "drghassen"
+    error_message = "The resource owner must be drghassen."
+  }
 }
 
 variable "kms_key_arn" {

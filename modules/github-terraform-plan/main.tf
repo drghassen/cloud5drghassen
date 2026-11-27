@@ -77,6 +77,15 @@ resource "aws_iam_role_policy" "this" {
         Resource = var.state_bucket_arn
       },
       {
+        Sid      = "WriteEncryptedEnvironmentPlans"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${var.state_bucket_arn}/cloud5/ci-plans/v1/${trimsuffix(var.github_environment, "-plan")}/*"
+        Condition = {
+          StringEquals = { "s3:x-amz-server-side-encryption" = "AES256" }
+        }
+      },
+      {
         Sid    = "ReadRegionalInfrastructure"
         Effect = "Allow"
         Action = [
@@ -121,6 +130,20 @@ resource "aws_iam_role_policy" "this" {
         # EC2, ELB, RDS, and Auto Scaling Describe APIs require wildcard resources;
         # these permissions are read-only and constrained to the configured region.
         Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = var.aws_region
+          }
+        }
+      },
+      {
+        Sid    = "ReadManagedDatabaseTags"
+        Effect = "Allow"
+        Action = ["rds:ListTagsForResource"]
+        Resource = [
+          "arn:aws:rds:${var.aws_region}:${var.aws_account_id}:db:${var.name_prefix}-postgres",
+          "arn:aws:rds:${var.aws_region}:${var.aws_account_id}:subgrp:${var.name_prefix}-db-subnets",
+        ]
         Condition = {
           StringEquals = {
             "aws:RequestedRegion" = var.aws_region

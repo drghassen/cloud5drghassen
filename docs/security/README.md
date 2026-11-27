@@ -27,9 +27,9 @@
   status is unverified. Check Route 53 before assuming hosted zones were
   deleted or that their charges have stopped.
 - **CI:** plans and applies use separate GitHub OIDC roles per environment.
-  Promotion is sequential DEV -> TEST -> PROD, with each apply gated by its
-  matching protected GitHub environment and scoped to that environment's state
-  and resources. No workflow runs `terraform destroy` or uses static AWS keys.
+  Each Apply requires an explicit manual dispatch and a matching protected
+  GitHub environment. Pull requests have no AWS state access. No workflow runs
+  `terraform destroy` or uses static AWS keys.
 
 Review the generated Terraform plan and AWS IAM policy scope before provisioning.
 These controls describe the code; they do not prove that AWS resources have

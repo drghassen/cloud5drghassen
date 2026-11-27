@@ -1,0 +1,8 @@
+# Effective only when branch/ruleset protection requires code-owner review.
+/.github/workflows/ @drghassen
+/.github/CODEOWNERS @drghassen
+/.pre-commit-config.yaml @drghassen
+/bootstrap/ @drghassen
+/environments/ @drghassen
+/scripts/gha/ @drghassen
+/modules/ @drghassen

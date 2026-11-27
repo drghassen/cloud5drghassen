@@ -142,6 +142,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Validate bootstrap Terraform roots
         shell: bash
@@ -169,17 +170,24 @@ jobs:
       - name: Run workflow contract tests
         run: python3 -m unittest discover -s scripts/gha -p "test_*.py" -v
 
+      - name: Check generated IAM Apply policy sizes
+        run: python3 scripts/gha/check_iam_apply.py
+
   plan-dev:
     name: Plan DEV
+    outputs:
+      plan_key: ${{ steps.store_plan.outputs.plan_key }}
+      plan_sha: ${{ steps.store_plan.outputs.plan_sha }}
+      plan_version: ${{ steps.store_plan.outputs.plan_version }}
+      plan_bucket: ${{ steps.store_plan.outputs.plan_bucket }}
     needs:
       - security-scans
       - terraform-lint
       - workflow-security
       - terraform-module-tests
     if: >-
-      github.event_name == 'pull_request' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev')
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.environment == 'dev')
     runs-on: ubuntu-latest
     environment: dev-plan
     timeout-minutes: 30
@@ -197,6 +205,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Require plan role and state bucket
         env:
@@ -205,8 +214,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PLAN_ROLE" || { echo "AWS_TERRAFORM_DEV_PLAN_ROLE_ARN is required." >&2; exit 1; }
-          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+          test "$PLAN_ROLE" = "arn:aws:iam::326553917564:role/cloud5-infra-dev-github-terraform-plan"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -232,46 +241,52 @@ jobs:
         run: terraform -chdir=environments/dev validate
 
       - name: Plan Terraform (dev)
+        id: terraform_plan
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=environments/dev plan -input=false \
             -var-file="terraform.tfvars.example" \
-            -out=tfplan
-          terraform -chdir=environments/dev show -no-color tfplan > environments/dev/plan.txt
-          (cd environments/dev && sha256sum tfplan > tfplan.sha256)
-
-      - name: Upload Terraform plan (dev)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: terraform-dev-plan-${{ github.run_id }}
-          path: |
-            environments/dev/tfplan
-            environments/dev/plan.txt
-            environments/dev/tfplan.sha256
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 7
-
-      - name: Publish Terraform plan summary (dev)
+            -out=tfplan > "$RUNNER_TEMP/terraform-dev-plan.log" 2>&1 || { echo "Terraform DEV plan failed; details remain on the runner." >&2; exit 1; }
+      - name: Store failed plan diagnostic privately (dev)
+        if: failure() && steps.terraform_plan.outcome == 'failure' && vars.TERRAFORM_DEV_S3_PLAN_HANDOFF_ENABLED == 'true'
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
         shell: bash
         run: |
           set -euo pipefail
-          {
-            echo "## Terraform plan (dev)"
-            echo
-            echo '```'
-            head -n 200 environments/dev/plan.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
+          key="cloud5/ci-plans/v1/dev/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/diagnostics/plan.log"
+          version="$(aws s3api put-object --bucket "$STATE_BUCKET" --key "$key" --body "$RUNNER_TEMP/terraform-dev-plan.log" --server-side-encryption AES256 --if-none-match '*' --expected-bucket-owner 326553917564 --query VersionId --output text 2>/dev/null)"
+          test -n "$version"
+          test "$version" != "None"
+          test "$version" != "null"
+          printf 'Private diagnostic S3 key: %s; version: %s\n' "$key" "$version"
+      - name: Store encrypted plan privately (dev)
+        id: store_plan
+        if: vars.TERRAFORM_DEV_S3_PLAN_HANDOFF_ENABLED == 'true'
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="cloud5/ci-plans/v1/dev/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/tfplan"
+          sha="$(sha256sum environments/dev/tfplan | cut -d ' ' -f 1)"
+          version="$(aws s3api put-object --bucket "$STATE_BUCKET" --key "$key" --body environments/dev/tfplan --server-side-encryption AES256 --if-none-match '*' --expected-bucket-owner 326553917564 --query VersionId --output text)"
+          test -n "$version"
+          test "$version" != "None"
+          test "$version" != "null"
+          printf 'plan_key=%s\nplan_sha=%s\nplan_version=%s\nplan_bucket=%s\n' "$key" "$sha" "$version" "$STATE_BUCKET" >> "$GITHUB_OUTPUT"
+          printf 'DEV plan SHA-256: `%s`\n\nS3 key: `%s`\n\nVersion: `%s`\n' "$sha" "$key" "$version" >> "$GITHUB_STEP_SUMMARY"
 
   apply-dev:
     name: Apply DEV
     needs:
       - plan-dev
     if: >-
+      vars.TERRAFORM_DEV_S3_PLAN_HANDOFF_ENABLED == 'true' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev' && inputs.apply))
+      github.event_name == 'workflow_dispatch' && inputs.environment == 'dev' && inputs.apply
     runs-on: ubuntu-latest
     environment: dev
     concurrency:
@@ -292,6 +307,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Require apply role and state bucket
         env:
@@ -300,8 +316,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$APPLY_ROLE" || { echo "AWS_TERRAFORM_DEV_APPLY_ROLE_ARN is required in the dev environment." >&2; exit 1; }
-          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+          test "$APPLY_ROLE" = "arn:aws:iam::326553917564:role/cloud5-infra-dev-github-terraform-apply"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -310,18 +326,24 @@ jobs:
           aws-region: eu-west-1
           role-session-name: terraform-dev-apply
 
-      - name: Download Terraform plan (dev)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: terraform-dev-plan-${{ github.run_id }}
-          path: environments/dev
-
-      - name: Verify plan integrity (dev)
+      - name: Verify private DEV diagnostic storage
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
         shell: bash
-        run: |
-          set -euo pipefail
-          cd environments/dev
-          sha256sum --check tfplan.sha256
+        run: bash scripts/gha/dev_diagnostics.sh preflight
+
+      - name: Download and verify plan version (dev)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          PLAN_BUCKET: ${{ needs.plan-dev.outputs.plan_bucket }}
+          PLAN_KEY: ${{ needs.plan-dev.outputs.plan_key }}
+          PLAN_VERSION: ${{ needs.plan-dev.outputs.plan_version }}
+          PLAN_SHA: ${{ needs.plan-dev.outputs.plan_sha }}
+          APPROVED_SHA: ${{ vars.TERRAFORM_APPROVED_PLAN_SHA256 }}
+          APPROVED_COMMIT: ${{ vars.TERRAFORM_APPROVED_COMMIT_SHA }}
+          TARGET_ENV: dev
+        shell: bash
+        run: bash scripts/gha/verify_plan_handoff.sh
 
       - name: Initialize Terraform (dev)
         env:
@@ -333,24 +355,35 @@ jobs:
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="region=eu-west-1"
 
+      - name: Enforce ownership on saved plan (dev)
+        env:
+          TERRAFORM_DESTRUCTION_APPROVAL: ${{ vars.TERRAFORM_DESTRUCTION_APPROVAL }}
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          bash scripts/gha/dev_diagnostics.sh gate python3 scripts/gha/check_plan_ownership.py --environment dev --plan environments/dev/tfplan
+
       - name: Apply Terraform plan (dev)
-        run: terraform -chdir=environments/dev apply -input=false tfplan
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          bash scripts/gha/dev_diagnostics.sh apply terraform -chdir=environments/dev apply -input=false tfplan
 
   plan-test:
     name: Plan TEST
+    outputs:
+      plan_key: ${{ steps.store_plan.outputs.plan_key }}
+      plan_sha: ${{ steps.store_plan.outputs.plan_sha }}
+      plan_version: ${{ steps.store_plan.outputs.plan_version }}
+      plan_bucket: ${{ steps.store_plan.outputs.plan_bucket }}
     needs:
       - security-scans
       - terraform-lint
       - workflow-security
       - terraform-module-tests
-      - apply-dev
     if: >-
-      !cancelled() &&
-      needs.security-scans.result == 'success' &&
-      needs.terraform-lint.result == 'success' &&
-      needs.workflow-security.result == 'success' &&
-      needs.terraform-module-tests.result == 'success' &&
-      (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'test') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.apply-dev.result == 'success'))
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.environment == 'test')
     runs-on: ubuntu-latest
     environment: test-plan
     timeout-minutes: 30
@@ -368,6 +401,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Require plan role and state bucket
         env:
@@ -376,8 +410,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PLAN_ROLE" || { echo "AWS_TERRAFORM_TEST_PLAN_ROLE_ARN is required." >&2; exit 1; }
-          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+          test "$PLAN_ROLE" = "arn:aws:iam::326553917564:role/cloud5-infra-test-github-terraform-plan"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -403,46 +437,52 @@ jobs:
         run: terraform -chdir=environments/test validate
 
       - name: Plan Terraform (test)
+        id: terraform_plan
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=environments/test plan -input=false \
             -var-file="terraform.tfvars.example" \
-            -out=tfplan
-          terraform -chdir=environments/test show -no-color tfplan > environments/test/plan.txt
-          (cd environments/test && sha256sum tfplan > tfplan.sha256)
-
-      - name: Upload Terraform plan (test)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: terraform-test-plan-${{ github.run_id }}
-          path: |
-            environments/test/tfplan
-            environments/test/plan.txt
-            environments/test/tfplan.sha256
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 7
-
-      - name: Publish Terraform plan summary (test)
+            -out=tfplan > "$RUNNER_TEMP/terraform-test-plan.log" 2>&1 || { echo "Terraform TEST plan failed; details remain on the runner." >&2; exit 1; }
+      - name: Store failed plan diagnostic privately (test)
+        if: failure() && steps.terraform_plan.outcome == 'failure' && vars.TERRAFORM_TEST_S3_PLAN_HANDOFF_ENABLED == 'true'
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
         shell: bash
         run: |
           set -euo pipefail
-          {
-            echo "## Terraform plan (test)"
-            echo
-            echo '```'
-            head -n 200 environments/test/plan.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
+          key="cloud5/ci-plans/v1/test/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/diagnostics/plan.log"
+          version="$(aws s3api put-object --bucket "$STATE_BUCKET" --key "$key" --body "$RUNNER_TEMP/terraform-test-plan.log" --server-side-encryption AES256 --if-none-match '*' --expected-bucket-owner 326553917564 --query VersionId --output text 2>/dev/null)"
+          test -n "$version"
+          test "$version" != "None"
+          test "$version" != "null"
+          printf 'Private diagnostic S3 key: %s; version: %s\n' "$key" "$version"
+      - name: Store encrypted plan privately (test)
+        id: store_plan
+        if: vars.TERRAFORM_TEST_S3_PLAN_HANDOFF_ENABLED == 'true'
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="cloud5/ci-plans/v1/test/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/tfplan"
+          sha="$(sha256sum environments/test/tfplan | cut -d ' ' -f 1)"
+          version="$(aws s3api put-object --bucket "$STATE_BUCKET" --key "$key" --body environments/test/tfplan --server-side-encryption AES256 --if-none-match '*' --expected-bucket-owner 326553917564 --query VersionId --output text)"
+          test -n "$version"
+          test "$version" != "None"
+          test "$version" != "null"
+          printf 'plan_key=%s\nplan_sha=%s\nplan_version=%s\nplan_bucket=%s\n' "$key" "$sha" "$version" "$STATE_BUCKET" >> "$GITHUB_OUTPUT"
+          printf 'TEST plan SHA-256: `%s`\n\nS3 key: `%s`\n\nVersion: `%s`\n' "$sha" "$key" "$version" >> "$GITHUB_STEP_SUMMARY"
 
   apply-test:
     name: Apply TEST
     needs:
       - plan-test
     if: >-
+      vars.TERRAFORM_TEST_S3_PLAN_HANDOFF_ENABLED == 'true' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'test' && inputs.apply))
+      github.event_name == 'workflow_dispatch' && inputs.environment == 'test' && inputs.apply
     runs-on: ubuntu-latest
     environment: test
     concurrency:
@@ -454,6 +494,12 @@ jobs:
       id-token: write
 
     steps:
+      - name: Require private Apply diagnostics (test)
+        shell: bash
+        run: |
+          echo "Apply is blocked until confidential diagnostic retention is implemented." >&2
+          exit 1
+
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -463,6 +509,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Require apply role and state bucket
         env:
@@ -471,8 +518,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$APPLY_ROLE" || { echo "AWS_TERRAFORM_TEST_APPLY_ROLE_ARN is required in the test environment." >&2; exit 1; }
-          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+          test "$APPLY_ROLE" = "arn:aws:iam::326553917564:role/cloud5-infra-test-github-terraform-apply"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -481,18 +528,18 @@ jobs:
           aws-region: eu-west-1
           role-session-name: terraform-test-apply
 
-      - name: Download Terraform plan (test)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: terraform-test-plan-${{ github.run_id }}
-          path: environments/test
-
-      - name: Verify plan integrity (test)
+      - name: Download and verify plan version (test)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          PLAN_BUCKET: ${{ needs.plan-test.outputs.plan_bucket }}
+          PLAN_KEY: ${{ needs.plan-test.outputs.plan_key }}
+          PLAN_VERSION: ${{ needs.plan-test.outputs.plan_version }}
+          PLAN_SHA: ${{ needs.plan-test.outputs.plan_sha }}
+          APPROVED_SHA: ${{ vars.TERRAFORM_APPROVED_PLAN_SHA256 }}
+          APPROVED_COMMIT: ${{ vars.TERRAFORM_APPROVED_COMMIT_SHA }}
+          TARGET_ENV: test
         shell: bash
-        run: |
-          set -euo pipefail
-          cd environments/test
-          sha256sum --check tfplan.sha256
+        run: bash scripts/gha/verify_plan_handoff.sh
 
       - name: Initialize Terraform (test)
         env:
@@ -504,24 +551,32 @@ jobs:
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="region=eu-west-1"
 
+      - name: Enforce ownership on saved plan (test)
+        env:
+          TERRAFORM_DESTRUCTION_APPROVAL: ${{ vars.TERRAFORM_DESTRUCTION_APPROVAL }}
+        shell: bash
+        run: |
+          python3 scripts/gha/check_plan_ownership.py --environment test --plan environments/test/tfplan > "$RUNNER_TEMP/terraform-test-ownership.log" 2>&1 || { echo "Ownership gate failed; diagnostic remains on the runner." >&2; exit 1; }
+
       - name: Apply Terraform plan (test)
-        run: terraform -chdir=environments/test apply -input=false tfplan
+        shell: bash
+        run: |
+          terraform -chdir=environments/test apply -input=false tfplan > "$RUNNER_TEMP/terraform-test-apply.log" 2>&1 || { echo "Terraform TEST apply failed; diagnostic remains on the runner." >&2; exit 1; }
 
   plan-prod:
     name: Plan PROD
+    outputs:
+      plan_key: ${{ steps.store_plan.outputs.plan_key }}
+      plan_sha: ${{ steps.store_plan.outputs.plan_sha }}
+      plan_version: ${{ steps.store_plan.outputs.plan_version }}
+      plan_bucket: ${{ steps.store_plan.outputs.plan_bucket }}
     needs:
       - security-scans
       - terraform-lint
       - workflow-security
       - terraform-module-tests
-      - apply-test
     if: >-
-      !cancelled() &&
-      needs.security-scans.result == 'success' &&
-      needs.terraform-lint.result == 'success' &&
-      needs.workflow-security.result == 'success' &&
-      needs.terraform-module-tests.result == 'success' &&
-      (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.apply-test.result == 'success'))
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.environment == 'prod')
     runs-on: ubuntu-latest
     environment: prod-plan
     timeout-minutes: 30
@@ -539,6 +594,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Require plan role and state bucket
         env:
@@ -547,8 +603,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PLAN_ROLE" || { echo "AWS_TERRAFORM_PROD_PLAN_ROLE_ARN is required." >&2; exit 1; }
-          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+          test "$PLAN_ROLE" = "arn:aws:iam::326553917564:role/cloud5-infra-prod-github-terraform-plan"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -574,46 +630,52 @@ jobs:
         run: terraform -chdir=environments/prod validate
 
       - name: Plan Terraform (prod)
+        id: terraform_plan
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=environments/prod plan -input=false \
             -var-file="terraform.tfvars.example" \
-            -out=tfplan
-          terraform -chdir=environments/prod show -no-color tfplan > environments/prod/plan.txt
-          (cd environments/prod && sha256sum tfplan > tfplan.sha256)
-
-      - name: Upload Terraform plan (prod)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: terraform-prod-plan-${{ github.run_id }}
-          path: |
-            environments/prod/tfplan
-            environments/prod/plan.txt
-            environments/prod/tfplan.sha256
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 7
-
-      - name: Publish Terraform plan summary (prod)
+            -out=tfplan > "$RUNNER_TEMP/terraform-prod-plan.log" 2>&1 || { echo "Terraform PROD plan failed; details remain on the runner." >&2; exit 1; }
+      - name: Store failed plan diagnostic privately (prod)
+        if: failure() && steps.terraform_plan.outcome == 'failure' && vars.TERRAFORM_PROD_S3_PLAN_HANDOFF_ENABLED == 'true'
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
         shell: bash
         run: |
           set -euo pipefail
-          {
-            echo "## Terraform plan (prod)"
-            echo
-            echo '```'
-            head -n 200 environments/prod/plan.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
+          key="cloud5/ci-plans/v1/prod/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/diagnostics/plan.log"
+          version="$(aws s3api put-object --bucket "$STATE_BUCKET" --key "$key" --body "$RUNNER_TEMP/terraform-prod-plan.log" --server-side-encryption AES256 --if-none-match '*' --expected-bucket-owner 326553917564 --query VersionId --output text 2>/dev/null)"
+          test -n "$version"
+          test "$version" != "None"
+          test "$version" != "null"
+          printf 'Private diagnostic S3 key: %s; version: %s\n' "$key" "$version"
+      - name: Store encrypted plan privately (prod)
+        id: store_plan
+        if: vars.TERRAFORM_PROD_S3_PLAN_HANDOFF_ENABLED == 'true'
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="cloud5/ci-plans/v1/prod/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/tfplan"
+          sha="$(sha256sum environments/prod/tfplan | cut -d ' ' -f 1)"
+          version="$(aws s3api put-object --bucket "$STATE_BUCKET" --key "$key" --body environments/prod/tfplan --server-side-encryption AES256 --if-none-match '*' --expected-bucket-owner 326553917564 --query VersionId --output text)"
+          test -n "$version"
+          test "$version" != "None"
+          test "$version" != "null"
+          printf 'plan_key=%s\nplan_sha=%s\nplan_version=%s\nplan_bucket=%s\n' "$key" "$sha" "$version" "$STATE_BUCKET" >> "$GITHUB_OUTPUT"
+          printf 'PROD plan SHA-256: `%s`\n\nS3 key: `%s`\n\nVersion: `%s`\n' "$sha" "$key" "$version" >> "$GITHUB_STEP_SUMMARY"
 
   apply-prod:
     name: Apply PROD
     needs:
       - plan-prod
     if: >-
+      vars.TERRAFORM_PROD_S3_PLAN_HANDOFF_ENABLED == 'true' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && inputs.apply))
+      github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && inputs.apply
     runs-on: ubuntu-latest
     environment: prod
     concurrency:
@@ -625,6 +687,12 @@ jobs:
       id-token: write
 
     steps:
+      - name: Require private Apply diagnostics (prod)
+        shell: bash
+        run: |
+          echo "Apply is blocked until confidential diagnostic retention is implemented." >&2
+          exit 1
+
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -634,6 +702,7 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.15.8
+          terraform_wrapper: false
 
       - name: Require apply role and state bucket
         env:
@@ -642,8 +711,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$APPLY_ROLE" || { echo "AWS_TERRAFORM_PROD_APPLY_ROLE_ARN is required in the prod environment." >&2; exit 1; }
-          test -n "$STATE_BUCKET" || { echo "TERRAFORM_STATE_BUCKET is required." >&2; exit 1; }
+          test "$APPLY_ROLE" = "arn:aws:iam::326553917564:role/cloud5-infra-prod-github-terraform-apply"
+          test "$STATE_BUCKET" = "cloud5-terraform-drghassen-state-326553917564"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -652,18 +721,18 @@ jobs:
           aws-region: eu-west-1
           role-session-name: terraform-prod-apply
 
-      - name: Download Terraform plan (prod)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: terraform-prod-plan-${{ github.run_id }}
-          path: environments/prod
-
-      - name: Verify plan integrity (prod)
+      - name: Download and verify plan version (prod)
+        env:
+          STATE_BUCKET: ${{ vars.TERRAFORM_STATE_BUCKET }}
+          PLAN_BUCKET: ${{ needs.plan-prod.outputs.plan_bucket }}
+          PLAN_KEY: ${{ needs.plan-prod.outputs.plan_key }}
+          PLAN_VERSION: ${{ needs.plan-prod.outputs.plan_version }}
+          PLAN_SHA: ${{ needs.plan-prod.outputs.plan_sha }}
+          APPROVED_SHA: ${{ vars.TERRAFORM_APPROVED_PLAN_SHA256 }}
+          APPROVED_COMMIT: ${{ vars.TERRAFORM_APPROVED_COMMIT_SHA }}
+          TARGET_ENV: prod
         shell: bash
-        run: |
-          set -euo pipefail
-          cd environments/prod
-          sha256sum --check tfplan.sha256
+        run: bash scripts/gha/verify_plan_handoff.sh
 
       - name: Initialize Terraform (prod)
         env:
@@ -675,5 +744,14 @@ jobs:
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="region=eu-west-1"
 
+      - name: Enforce ownership on saved plan (prod)
+        env:
+          TERRAFORM_DESTRUCTION_APPROVAL: ${{ vars.TERRAFORM_DESTRUCTION_APPROVAL }}
+        shell: bash
+        run: |
+          python3 scripts/gha/check_plan_ownership.py --environment prod --plan environments/prod/tfplan > "$RUNNER_TEMP/terraform-prod-ownership.log" 2>&1 || { echo "Ownership gate failed; diagnostic remains on the runner." >&2; exit 1; }
+
       - name: Apply Terraform plan (prod)
-        run: terraform -chdir=environments/prod apply -input=false tfplan
+        shell: bash
+        run: |
+          terraform -chdir=environments/prod apply -input=false tfplan > "$RUNNER_TEMP/terraform-prod-apply.log" 2>&1 || { echo "Terraform PROD apply failed; diagnostic remains on the runner." >&2; exit 1; }
