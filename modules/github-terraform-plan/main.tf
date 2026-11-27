@@ -142,18 +142,23 @@ resource "aws_iam_role_policy" "this" {
         Sid    = "ReadStorageBucketConfiguration"
         Effect = "Allow"
         Action = [
+          "s3:GetAccelerateConfiguration",
           "s3:GetBucketAcl",
           "s3:GetBucketCORS",
           "s3:GetBucketLocation",
+          "s3:GetBucketLogging",
+          "s3:GetBucketNotification",
           "s3:GetBucketOwnershipControls",
           "s3:GetBucketPolicy",
           "s3:GetBucketPolicyStatus",
           "s3:GetBucketPublicAccessBlock",
+          "s3:GetBucketRequestPayment",
           "s3:GetBucketTagging",
           "s3:GetBucketVersioning",
           "s3:GetBucketWebsite",
           "s3:GetEncryptionConfiguration",
           "s3:GetLifecycleConfiguration",
+          "s3:GetReplicationConfiguration",
           "s3:ListBucket"
         ]
         Resource = local.storage_bucket_arn
