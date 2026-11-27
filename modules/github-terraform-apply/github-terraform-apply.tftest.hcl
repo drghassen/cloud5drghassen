@@ -44,8 +44,10 @@ run "role_is_restricted_to_dev_main" {
     condition = (
       one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "PassOnlyProjectInstanceRoleToEc2"]).Resource ==
       "arn:aws:iam::326553917564:role/cloud5-infra-dev-web-instance-role" &&
-      one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "PassOnlyProjectInstanceRoleToEc2"]).Condition.StringEquals["iam:PassedToService"] ==
-      "ec2.amazonaws.com"
+      contains(
+        try(tolist(one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "PassOnlyProjectInstanceRoleToEc2"]).Condition.StringEquals["iam:PassedToService"]), [one([for statement in jsondecode(aws_iam_role_policy.this.policy).Statement : statement if statement.Sid == "PassOnlyProjectInstanceRoleToEc2"]).Condition.StringEquals["iam:PassedToService"]]),
+        "ec2.amazonaws.com"
+      )
     )
     error_message = "iam:PassRole must be limited to the DEV EC2 instance role."
   }

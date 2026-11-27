@@ -10,3 +10,7 @@ nat_gateway_count = 1
 
 # HTTP uses the ALB's AWS DNS name and needs no custom domain or certificate.
 enable_https = false
+
+# AWS Free Tier limits RDS automated backup retention; 0 disables automated backups for DEV.
+# Increase to 1-35 on a paid account (TEST/PROD default: 7 days).
+db_backup_retention_period = 0

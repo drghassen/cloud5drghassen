@@ -16,10 +16,19 @@ locals {
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:internet-gateway/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
-    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group-rule/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:elastic-ip/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:natgateway/*",
     "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*"
+  ]
+
+  launch_resource_arns = [
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*",
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*",
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*",
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:subnet/*",
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
+    "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:network-interface/*",
+    "arn:aws:ec2:${var.aws_region}::image/*"
   ]
 
   load_balancer_resource_arns = [
@@ -126,6 +135,7 @@ resource "aws_iam_role_policy" "this" {
           "ec2:DescribeVolumes",
           "ec2:DescribeVpcAttribute",
           "ec2:DescribeVpcs",
+          "elasticloadbalancing:DescribeListenerAttributes",
           "elasticloadbalancing:DescribeListeners",
           "elasticloadbalancing:DescribeLoadBalancerAttributes",
           "elasticloadbalancing:DescribeLoadBalancers",
@@ -147,16 +157,19 @@ resource "aws_iam_role_policy" "this" {
         }
       },
       {
-        Sid      = "ReadManagedInstanceRole"
-        Effect   = "Allow"
-        Action   = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListRolePolicies", "iam:ListRoleTags"]
-        Resource = local.instance_role_arn
-      },
-      {
-        Sid      = "ReadManagedInstanceProfile"
-        Effect   = "Allow"
-        Action   = ["iam:GetInstanceProfile", "iam:ListInstanceProfileTags", "iam:ListInstanceProfilesForRole"]
-        Resource = local.instance_profile_arn
+        Sid    = "ReadProjectInstanceIam"
+        Effect = "Allow"
+        Action = [
+          "iam:GetInstanceProfile",
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListInstanceProfileTags",
+          "iam:ListInstanceProfilesForRole",
+          "iam:ListRolePolicies",
+          "iam:ListRoleTags"
+        ]
+        Resource = [local.instance_role_arn, local.instance_profile_arn]
       },
       {
         Sid      = "ReadSsmManagedPolicy"
@@ -167,7 +180,7 @@ resource "aws_iam_role_policy" "this" {
       {
         Sid      = "ReadApplicationBucketConfiguration"
         Effect   = "Allow"
-        Action   = ["s3:GetAccelerateConfiguration", "s3:GetBucket*", "s3:GetBucketAcl", "s3:GetBucketCORS", "s3:GetBucketLocation", "s3:GetBucketLogging", "s3:GetBucketNotification", "s3:GetBucketObjectLockConfiguration", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketRequestPayment", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketWebsite", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetReplicationConfiguration", "s3:ListBucket"]
+        Action   = ["s3:GetAccelerateConfiguration", "s3:GetBucket*", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetReplicationConfiguration", "s3:ListBucket"]
         Resource = local.storage_bucket_arn
       },
       {
@@ -202,11 +215,6 @@ resource "aws_iam_role_policy" "this" {
           "ec2:AuthorizeSecurityGroupEgress",
           "ec2:AuthorizeSecurityGroupIngress",
           "ec2:CreateLaunchTemplateVersion",
-          "ec2:CreateNatGateway",
-          "ec2:CreateRoute",
-          "ec2:CreateRouteTable",
-          "ec2:CreateSecurityGroup",
-          "ec2:CreateSubnet",
           "ec2:DeleteInternetGateway",
           "ec2:DeleteLaunchTemplate",
           "ec2:DeleteLaunchTemplateVersions",
@@ -248,6 +256,7 @@ resource "aws_iam_role_policy" "this" {
           "elasticloadbalancing:DeleteLoadBalancer",
           "elasticloadbalancing:DeleteTargetGroup",
           "elasticloadbalancing:ModifyListener",
+          "elasticloadbalancing:ModifyListenerAttributes",
           "elasticloadbalancing:ModifyLoadBalancerAttributes",
           "elasticloadbalancing:ModifyTargetGroup",
           "elasticloadbalancing:ModifyTargetGroupAttributes",
@@ -357,6 +366,36 @@ resource "aws_iam_role_policy" "this" {
           "s3:PutBucketVersioning"
         ]
         Resource = local.storage_bucket_arn
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = var.aws_region
+          }
+        }
+      },
+      {
+        Sid    = "ManageProjectSecurityGroupRules"
+        Effect = "Allow"
+        Action = [
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupIngress"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group-rule/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = var.aws_region
+          }
+        }
+      },
+      {
+        Sid    = "AllowLaunchTemplateRunInstances"
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateTags",
+          "ec2:RunInstances"
+        ]
+        Resource = local.launch_resource_arns
         Condition = {
           StringEquals = {
             "aws:RequestedRegion" = var.aws_region
