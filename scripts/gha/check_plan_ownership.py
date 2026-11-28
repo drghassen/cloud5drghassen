@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 ALLOWED = {
+    "module.monitoring.aws_cloudwatch_metric_alarm.this": "aws_cloudwatch_metric_alarm",
     "module.network.aws_vpc.this": "aws_vpc",
     "module.network.aws_default_security_group.this": "aws_default_security_group",
     "module.network.aws_subnet.public": "aws_subnet",
@@ -125,6 +126,61 @@ def validate_plan(plan, environment, commit, digest, approval=None):
                 if not isinstance(child, dict) or not isinstance(parent, dict) or not child.get("autoscaling_group_name") or child["autoscaling_group_name"] != parent.get("name") or parent_tags is None or any(parent_tags.get(k) != v for k, v in required.items()):
                     raise ValueError(f"{address}: parent group or tags not verified")
             continue
+        # Monitoring resources are restricted to the DEV environment
+        # until TEST and PROD monitoring are explicitly integrated.
+        if base == "module.monitoring.aws_cloudwatch_dashboard.operations":
+            if environment != "dev" or resource_type != "aws_cloudwatch_dashboard":
+                raise ValueError(f"{address}: invalid dashboard scope")
+            if address != base:
+                raise ValueError(f"{address}: unexpected dashboard address")
+            if "delete" in actions and not approved(approval, environment, commit, digest, address):
+                raise ValueError(f"{address}: dashboard deletion not approved")
+            expected_name = "cloud5-infra-dev-operations"
+            sides = []
+            if "delete" in actions or "create" not in actions:
+                sides.append("before")
+            if "create" in actions or "update" in actions:
+                sides.append("after")
+            for side in sides:
+                value = change.get(side)
+                if not isinstance(value, dict) or value.get("dashboard_name") != expected_name:
+                    raise ValueError(f"{address}: dashboard ownership not verified")
+                if side == "after":
+                    metadata = change.get("after_unknown")
+                    if not isinstance(metadata, dict) or unknown(metadata.get("dashboard_name")):
+                        raise ValueError(f"{address}: dashboard name is unknown")
+            continue
+
+        if base == "module.monitoring.aws_cloudwatch_metric_alarm.this":
+            if environment != "dev" or resource_type != "aws_cloudwatch_metric_alarm":
+                raise ValueError(f"{address}: invalid alarm scope")
+            allowed_keys = {
+                "healthy-hosts-low",
+                "alb-5xx-high",
+                "ec2-cpu-high",
+                "rds-storage-low",
+            }
+            expected_names = {
+                f'{base}["{key}"]': f"cloud5-infra-dev-{key}"
+                for key in allowed_keys
+            }
+            expected_name = expected_names.get(address)
+            if expected_name is None:
+                raise ValueError(f"{address}: unexpected alarm address")
+            sides = []
+            if "delete" in actions or "create" not in actions:
+                sides.append("before")
+            if "create" in actions or "update" in actions:
+                sides.append("after")
+            for side in sides:
+                value = change.get(side)
+                if not isinstance(value, dict) or value.get("alarm_name") != expected_name:
+                    raise ValueError(f"{address}: alarm name not verified")
+                if side == "after":
+                    metadata = change.get("after_unknown")
+                    if not isinstance(metadata, dict) or unknown(metadata.get("alarm_name")):
+                        raise ValueError(f"{address}: alarm name is unknown")
+
         if ALLOWED.get(base) != resource_type:
             raise ValueError(f"{address}: outside the verified taggable scope")
         if "delete" in actions and not approved(approval, environment, commit, digest, address):
