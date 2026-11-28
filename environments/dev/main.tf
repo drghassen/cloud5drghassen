@@ -107,6 +107,16 @@ module "storage" {
   common_tags = local.common_tags
 }
 
+module "notifications" {
+  source = "../../modules/notifications"
+
+  name_prefix    = var.resource_name_prefix
+  aws_region     = var.aws_region
+  aws_account_id = "326553917564"
+  kms_key_arn    = "arn:aws:kms:eu-west-1:326553917564:key/e3457e7c-9593-498b-af07-d697ae114a45"
+  common_tags    = local.common_tags
+}
+
 module "monitoring" {
   source = "../../modules/monitoring"
 
@@ -118,4 +128,5 @@ module "monitoring" {
   autoscaling_group_name = module.compute.autoscaling_group_name
   db_instance_identifier = module.database.db_instance_identifier
   minimum_healthy_hosts  = var.min_size
+  alarm_actions          = [module.notifications.topic_arn]
 }
