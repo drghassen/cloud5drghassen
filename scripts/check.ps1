@@ -31,6 +31,8 @@ foreach ($rootDir in $rootDirs) {
 }
 
 Write-Host "=== Terraform module tests ===" -ForegroundColor Cyan
+& terraform -chdir=bootstrap test
+if ($LASTEXITCODE -ne 0) { throw "bootstrap tests failed" }
 $moduleDirs = @(
     "modules\network",
     "modules\security",

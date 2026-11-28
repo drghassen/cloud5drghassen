@@ -168,6 +168,9 @@ jobs:
             terraform -chdir="modules/$module" test
           done
 
+      - name: Test S3 bootstrap with mocks
+        run: terraform -chdir=bootstrap test
+
       - name: Run workflow contract tests
         run: python3 -m unittest discover -s scripts/gha -p "test_*.py" -v
 
