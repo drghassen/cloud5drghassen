@@ -3,7 +3,7 @@ aws_region   = "eu-west-1"
 environment  = "test"
 project_name = "terraform-cloud-project"
 owner        = "drghassen"
-vpc_cidr     = "10.20.0.0/16"
+vpc_cidr     = "10.30.0.0/16"
 
 # TEST is disposable; destroy it after the demonstration to stop recurring costs.
 nat_gateway_count = 1

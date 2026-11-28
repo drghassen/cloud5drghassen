@@ -1,48 +1,22 @@
-locals {
-  monitoring_dashboard_arn = "arn:aws:cloudwatch::${data.aws_caller_identity.current.account_id}:dashboard/cloud5-infra-dev-operations"
+module "extensions" {
+  source = "../../modules/github-terraform-extensions"
 
-  monitoring_alarm_arns = [
-    for name in [
-      "healthy-hosts-low",
-      "alb-5xx-high",
-      "ec2-cpu-high",
-      "rds-storage-low"
-    ] :
-    "arn:aws:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:cloud5-infra-dev-${name}"
-  ]
-
-  monitoring_read_statements = [
-    {
-      Sid      = "ReadProjectDashboard"
-      Effect   = "Allow"
-      Action   = ["cloudwatch:GetDashboard"]
-      Resource = local.monitoring_dashboard_arn
-    },
-    {
-      Sid    = "ReadProjectAlarms"
-      Effect = "Allow"
-      Action = [
-        "cloudwatch:DescribeAlarms",
-        "cloudwatch:ListTagsForResource"
-      ]
-      Resource = local.monitoring_alarm_arns
-    }
-  ]
+  environment       = var.environment
+  role_type         = "plan"
+  role_name         = module.github_terraform_dev_plan.role_name
+  name_prefix       = var.name_prefix
+  aws_region        = var.aws_region
+  aws_account_id    = data.aws_caller_identity.current.account_id
+  state_bucket_name = var.state_bucket_name
+  common_tags       = local.common_tags
 }
 
-resource "aws_iam_policy" "monitoring" {
-  name        = "cloud5-infra-dev-github-terraform-plan-monitoring"
-  description = "Read-only CloudWatch access for Cloud5 DEV Terraform plans."
-
-  policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = local.monitoring_read_statements
-  })
-
-  tags = local.common_tags
+moved {
+  from = aws_iam_policy.monitoring
+  to   = module.extensions.aws_iam_policy.monitoring[0]
 }
 
-resource "aws_iam_role_policy_attachment" "monitoring" {
-  role       = module.github_terraform_dev_plan.role_name
-  policy_arn = aws_iam_policy.monitoring.arn
+moved {
+  from = aws_iam_role_policy_attachment.monitoring
+  to   = module.extensions.aws_iam_role_policy_attachment.monitoring[0]
 }

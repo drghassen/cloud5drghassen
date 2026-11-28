@@ -49,3 +49,22 @@ module "github_terraform_apply" {
   state_bucket_arn     = "arn:aws:s3:::${var.state_bucket_name}"
   state_key            = each.value.state_key
 }
+
+# PROD remains intentionally outside this refactoring. TEST receives the
+# APPLY-only diagnostics policy in addition to monitoring and notifications.
+module "test_extensions" {
+  source = "../../modules/github-terraform-extensions"
+
+  environment       = "test"
+  role_type         = "apply"
+  role_name         = module.github_terraform_apply["test"].role_name
+  name_prefix       = local.environments.test.name_prefix
+  aws_region        = var.aws_region
+  aws_account_id    = data.aws_caller_identity.current.account_id
+  state_bucket_name = var.state_bucket_name
+  common_tags = merge(local.common_tags, {
+    Environment = "test"
+    Component   = "github-terraform-test-apply"
+  })
+  enable_diagnostics = true
+}
