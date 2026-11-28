@@ -8,8 +8,6 @@ set -euo pipefail
 : "${PLAN_KEY:?}"
 : "${PLAN_VERSION:?}"
 : "${PLAN_SHA:?}"
-: "${APPROVED_SHA:?}"
-: "${APPROVED_COMMIT:?}"
 : "${GITHUB_SHA:?}"
 : "${GITHUB_RUN_ID:?}"
 : "${GITHUB_RUN_ATTEMPT:?}"
@@ -20,11 +18,20 @@ test "$PLAN_BUCKET" = "$STATE_BUCKET"
 [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 test "$PLAN_KEY" = "cloud5/ci-plans/v1/$TARGET_ENV/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/tfplan"
 [[ "$PLAN_SHA" =~ ^[0-9a-f]{64}$ ]]
-[[ "$APPROVED_SHA" =~ ^[0-9a-f]{64}$ ]]
 [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-[[ "$APPROVED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-test "$PLAN_SHA" = "$APPROVED_SHA"
-test "$GITHUB_SHA" = "$APPROVED_COMMIT"
+if [[ "$TARGET_ENV" == dev ]]; then
+  : "${PLAN_COMMIT:?}" "${PLAN_RUN_ID:?}" "${PLAN_RUN_ATTEMPT:?}" "${PLAN_ENVIRONMENT:?}"
+  test "$PLAN_COMMIT" = "$GITHUB_SHA"
+  test "$PLAN_RUN_ID" = "$GITHUB_RUN_ID"
+  test "$PLAN_RUN_ATTEMPT" = "$GITHUB_RUN_ATTEMPT"
+  test "$PLAN_ENVIRONMENT" = "$TARGET_ENV"
+else
+  : "${APPROVED_SHA:?}" "${APPROVED_COMMIT:?}"
+  [[ "$APPROVED_SHA" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$APPROVED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+  test "$PLAN_SHA" = "$APPROVED_SHA"
+  test "$GITHUB_SHA" = "$APPROVED_COMMIT"
+fi
 test "$PLAN_VERSION" != "None"
 test "$PLAN_VERSION" != "null"
 

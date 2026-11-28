@@ -180,6 +180,10 @@ jobs:
       plan_sha: ${{ steps.store_plan.outputs.plan_sha }}
       plan_version: ${{ steps.store_plan.outputs.plan_version }}
       plan_bucket: ${{ steps.store_plan.outputs.plan_bucket }}
+      commit_sha: ${{ steps.store_plan.outputs.commit_sha }}
+      run_id: ${{ steps.store_plan.outputs.run_id }}
+      run_attempt: ${{ steps.store_plan.outputs.run_attempt }}
+      environment: ${{ steps.store_plan.outputs.environment }}
     needs:
       - security-scans
       - terraform-lint
@@ -277,7 +281,13 @@ jobs:
           test "$version" != "None"
           test "$version" != "null"
           printf 'plan_key=%s\nplan_sha=%s\nplan_version=%s\nplan_bucket=%s\n' "$key" "$sha" "$version" "$STATE_BUCKET" >> "$GITHUB_OUTPUT"
-          printf 'DEV plan SHA-256: `%s`\n\nS3 key: `%s`\n\nVersion: `%s`\n' "$sha" "$key" "$version" >> "$GITHUB_STEP_SUMMARY"
+          printf 'commit_sha=%s\nrun_id=%s\nrun_attempt=%s\nenvironment=dev\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          if ! terraform -chdir=environments/dev show -json tfplan 2> "$RUNNER_TEMP/dev-show.err" | python3 scripts/gha/summarize_plan.py > "$RUNNER_TEMP/dev-summary.txt"; then
+            echo 'DEV plan summary failed.' >&2
+            exit 1
+          fi
+          printf '### DEV plan metadata\n\n- Environment: `dev`\n- Commit SHA: `%s`\n- Run ID: `%s`\n- Run attempt: `%s`\n- Plan SHA-256: `%s`\n- S3 object key: `%s`\n- S3 version ID: `%s`\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$sha" "$key" "$version" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/dev-summary.txt" >> "$GITHUB_STEP_SUMMARY"
 
   apply-dev:
     name: Apply DEV
@@ -339,8 +349,10 @@ jobs:
           PLAN_KEY: ${{ needs.plan-dev.outputs.plan_key }}
           PLAN_VERSION: ${{ needs.plan-dev.outputs.plan_version }}
           PLAN_SHA: ${{ needs.plan-dev.outputs.plan_sha }}
-          APPROVED_SHA: ${{ vars.TERRAFORM_APPROVED_PLAN_SHA256 }}
-          APPROVED_COMMIT: ${{ vars.TERRAFORM_APPROVED_COMMIT_SHA }}
+          PLAN_COMMIT: ${{ needs.plan-dev.outputs.commit_sha }}
+          PLAN_RUN_ID: ${{ needs.plan-dev.outputs.run_id }}
+          PLAN_RUN_ATTEMPT: ${{ needs.plan-dev.outputs.run_attempt }}
+          PLAN_ENVIRONMENT: ${{ needs.plan-dev.outputs.environment }}
           TARGET_ENV: dev
         shell: bash
         run: bash scripts/gha/verify_plan_handoff.sh

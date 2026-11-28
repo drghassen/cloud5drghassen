@@ -63,14 +63,42 @@ class WorkflowContractTest(unittest.TestCase):
     def test_generated_apply_policy_size_is_checked(self) -> None:
         self.assertIn("python3 scripts/gha/check_iam_apply.py", self.read_workflow())
 
+    def test_dev_handoff_and_environment_contract(self) -> None:
+        text = self.read_workflow()
+        plan = text.split("  plan-dev:", 1)[1].split("  apply-dev:", 1)[0]
+        dev = text.split("  apply-dev:", 1)[1].split("  plan-test:", 1)[0]
+        names = {"plan_bucket": "PLAN_BUCKET", "plan_key": "PLAN_KEY", "plan_version": "PLAN_VERSION",
+                 "plan_sha": "PLAN_SHA", "commit_sha": "PLAN_COMMIT", "run_id": "PLAN_RUN_ID",
+                 "run_attempt": "PLAN_RUN_ATTEMPT", "environment": "PLAN_ENVIRONMENT"}
+        for output, variable in names.items():
+            self.assertIn(f"{output}: ${{{{ steps.store_plan.outputs.{output} }}}}", plan)
+            self.assertIn(f"{variable}: ${{{{ needs.plan-dev.outputs.{output} }}}}", dev)
+        self.assertIn("- plan-dev", dev)
+        self.assertIn("environment: dev\n", dev)
+        self.assertIn("github.ref == 'refs/heads/main'", dev)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.environment == 'dev' && inputs.apply", dev)
+        self.assertNotIn("TERRAFORM_APPROVED_PLAN_SHA256", dev)
+        self.assertNotIn("TERRAFORM_APPROVED_COMMIT_SHA", dev)
+        self.assertIn("TERRAFORM_DESTRUCTION_APPROVAL", dev)
+        self.assertLess(dev.index("bash scripts/gha/verify_plan_handoff.sh"), dev.index("check_plan_ownership.py"))
+        self.assertLess(dev.index("check_plan_ownership.py"), dev.index("terraform -chdir=environments/dev apply"))
+        for env in ("test", "prod"):
+            job = text.split(f"  apply-{env}:", 1)[1].split("\n  plan-", 1)[0]
+            self.assertIn("vars.TERRAFORM_APPROVED_PLAN_SHA256", job)
+            self.assertIn("vars.TERRAFORM_APPROVED_COMMIT_SHA", job)
+            self.assertIn("TERRAFORM_DESTRUCTION_APPROVAL", job)
+        self.assertNotIn("actions/upload-artifact", text)
+
     def test_public_repository_does_not_publish_or_apply_plan_artifacts(self) -> None:
         text = self.read_workflow()
         self.assertNotIn("actions/upload-artifact", text)
         self.assertNotIn("actions/download-artifact", text)
         self.assertNotIn("plan.txt", text)
         self.assertNotIn("TERRAFORM_S3_PLAN_HANDOFF_ENABLED", text)
-        self.assertEqual(text.count("vars.TERRAFORM_APPROVED_PLAN_SHA256"), 3)
-        self.assertEqual(text.count("vars.TERRAFORM_APPROVED_COMMIT_SHA"), 3)
+        self.assertEqual(text.count("vars.TERRAFORM_APPROVED_PLAN_SHA256"), 2)
+        self.assertEqual(text.count("vars.TERRAFORM_APPROVED_COMMIT_SHA"), 2)
+        for field in ("commit_sha", "run_id", "run_attempt", "environment"):
+            self.assertIn(f"needs.plan-dev.outputs.{field}", text)
         for env in ("dev", "test", "prod"):
             self.assertEqual(text.count(f"vars.TERRAFORM_{env.upper()}_S3_PLAN_HANDOFF_ENABLED == 'true'"), 3)
             self.assertIn(f"github.event_name == 'workflow_dispatch' && inputs.environment == '{env}' && inputs.apply", text)
