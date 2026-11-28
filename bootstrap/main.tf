@@ -22,6 +22,12 @@ locals {
   # Après provisionnement, passer le nom à scripts/init-env.sh comme argument.
   bucket_name = var.state_bucket_name
 
+  diagnostics_environments = ["dev", "test", "prod"]
+  diagnostics_retention = {
+    dev  = { current_days = 7, noncurrent_days = 1 }
+    test = { current_days = 7, noncurrent_days = 1 }
+  }
+
   common_tags = {
     Project     = var.project_name
     Owner       = var.owner
@@ -172,51 +178,43 @@ resource "aws_s3_bucket_policy" "state" {
         Action    = ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
         Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-plans/v1/${environment}/*"
         Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-apply" } }
-      }], [
-      {
-        Sid       = "DenyOtherPrincipalsDevDiagnostics"
+        }], [for environment in local.diagnostics_environments : {
+        Sid       = "DenyOtherPrincipals${title(environment)}Diagnostics"
         Effect    = "Deny"
         Principal = "*"
         Action    = "s3:*"
-        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/dev/*"
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/${environment}/*"
         Condition = {
           StringNotEquals = {
             "aws:PrincipalArn" = [
               "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
               "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.owner}",
-              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-dev-github-terraform-apply"
+              "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-apply"
             ]
           }
         }
-      },
-      {
-        Sid       = "DenyDevApplyReadingOrDeletingDiagnostics"
+        }], [for environment in local.diagnostics_environments : {
+        Sid       = "Deny${title(environment)}ApplyReadingOrDeletingDiagnostics"
         Effect    = "Deny"
         Principal = "*"
         Action    = ["s3:GetObject", "s3:GetObjectVersion", "s3:DeleteObject", "s3:DeleteObjectVersion"]
-        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/dev/*"
-        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-dev-github-terraform-apply" } }
-      },
-      {
-        Sid       = "DenyDevDiagnosticsWithoutSseS3"
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/${environment}/*"
+        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-apply" } }
+        }], [for environment in local.diagnostics_environments : {
+        Sid       = "Deny${title(environment)}DiagnosticsWithoutSseS3"
         Effect    = "Deny"
         Principal = "*"
         Action    = "s3:PutObject"
-        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/dev/*"
+        Resource  = "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/${environment}/*"
         Condition = { StringNotEquals = { "s3:x-amz-server-side-encryption" = "AES256" } }
-      },
-      {
-        Sid       = "DenyDevApplyOtherEnvironmentDiagnostics"
+        }], [for environment in local.diagnostics_environments : {
+        Sid       = "Deny${title(environment)}ApplyOtherEnvironmentDiagnostics"
         Effect    = "Deny"
         Principal = "*"
         Action    = "s3:*"
-        Resource = [
-          "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/test/*",
-          "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/prod/*"
-        ]
-        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-dev-github-terraform-apply" } }
-      }
-    ])
+        Resource  = [for other in local.diagnostics_environments : "${aws_s3_bucket.state.arn}/cloud5/ci-diagnostics/v1/${other}/*" if other != environment]
+        Condition = { StringEquals = { "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cloud5-infra-${environment}-github-terraform-apply" } }
+    }])
   })
 
   depends_on = [aws_s3_bucket_public_access_block.state]
@@ -273,17 +271,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
     }
   }
 
-  rule {
-    id     = "expire-dev-ci-diagnostics"
-    status = "Enabled"
-    filter {
-      prefix = "cloud5/ci-diagnostics/v1/dev/"
-    }
-    expiration {
-      days = 7
-    }
-    noncurrent_version_expiration {
-      noncurrent_days = 1
+  dynamic "rule" {
+    for_each = local.diagnostics_retention
+    content {
+      id     = "expire-${rule.key}-ci-diagnostics"
+      status = "Enabled"
+      filter {
+        prefix = "cloud5/ci-diagnostics/v1/${rule.key}/"
+      }
+      expiration {
+        days = rule.value.current_days
+      }
+      noncurrent_version_expiration {
+        noncurrent_days = rule.value.noncurrent_days
+      }
     }
   }
 }
