@@ -92,6 +92,18 @@ resource "aws_launch_template" "web" {
 }
 
 resource "aws_autoscaling_group" "web" {
+  metrics_granularity = "1Minute"
+
+  enabled_metrics = [
+    "GroupMinSize",
+    "GroupMaxSize",
+    "GroupDesiredCapacity",
+    "GroupInServiceInstances",
+    "GroupPendingInstances",
+    "GroupTerminatingInstances",
+    "GroupTotalInstances"
+  ]
+
   name                      = "${var.name_prefix}-web-asg"
   min_size                  = var.min_size
   desired_capacity          = var.desired_capacity

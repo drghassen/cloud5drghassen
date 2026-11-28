@@ -27,3 +27,8 @@ output "master_user_secret_arn" {
   description = "ARN of the AWS-managed secret containing the generated RDS master password."
   value       = aws_db_instance.this.master_user_secret[0].secret_arn
 }
+
+output "db_instance_identifier" {
+  description = "RDS identifier used by CloudWatch metrics."
+  value       = aws_db_instance.this.identifier
+}

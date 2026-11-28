@@ -106,3 +106,16 @@ module "storage" {
   name_prefix = var.resource_name_prefix
   common_tags = local.common_tags
 }
+
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  name_prefix            = var.resource_name_prefix
+  aws_region             = var.aws_region
+  common_tags            = local.common_tags
+  alb_arn                = module.load_balancer.alb_arn
+  target_group_arn       = module.load_balancer.target_group_arn
+  autoscaling_group_name = module.compute.autoscaling_group_name
+  db_instance_identifier = module.database.db_instance_identifier
+  minimum_healthy_hosts  = var.min_size
+}
