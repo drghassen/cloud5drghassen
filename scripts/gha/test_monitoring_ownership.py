@@ -43,6 +43,10 @@ def alarm():
             "before": None,
             "after": {
                 "alarm_name": "cloud5-infra-dev-healthy-hosts-low",
+                "actions_enabled": False,
+                "alarm_actions": [],
+                "ok_actions": [],
+                "insufficient_data_actions": [],
                 "tags_all": dict(TAGS),
             },
             "after_unknown": {},

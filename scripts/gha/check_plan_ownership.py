@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 ALLOWED = {
+    "module.notifications.aws_sns_topic.alerts": "aws_sns_topic",
     "module.monitoring.aws_cloudwatch_metric_alarm.this": "aws_cloudwatch_metric_alarm",
     "module.network.aws_vpc.this": "aws_vpc",
     "module.network.aws_default_security_group.this": "aws_default_security_group",
@@ -81,6 +82,163 @@ def approved(approval, environment, commit, digest, address):
     return (approval["environment"] == environment and approval["commit"] == commit
             and approval["sha256"] == digest and isinstance(addresses, list)
             and all(isinstance(a, str) for a in addresses) and address in addresses)
+
+
+
+SNS_ADDRESS = "module.notifications.aws_sns_topic.alerts"
+SNS_NAME = "cloud5-infra-dev-alerts"
+SNS_ACCOUNT = "326553917564"
+SNS_REGION = "eu-west-1"
+SNS_ARN = f"arn:aws:sns:{SNS_REGION}:{SNS_ACCOUNT}:{SNS_NAME}"
+
+SNS_KMS_ARN = (
+    f"arn:aws:kms:{SNS_REGION}:{SNS_ACCOUNT}:"
+    "key/e3457e7c-9593-498b-af07-d697ae114a45"
+)
+
+SNS_ALARM_NAMES = (
+    "alb-5xx-high",
+    "ec2-cpu-high",
+    "healthy-hosts-low",
+    "rds-storage-low",
+)
+
+
+def expected_sns_policy():
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowAccountTopicManagement",
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": f"arn:aws:iam::{SNS_ACCOUNT}:root",
+                },
+                "Action": [
+                    "sns:GetTopicAttributes",
+                    "sns:SetTopicAttributes",
+                    "sns:DeleteTopic",
+                    "sns:Subscribe",
+                    "sns:ListSubscriptionsByTopic",
+                ],
+                "Resource": SNS_ARN,
+            },
+            {
+                "Sid": "AllowProjectCloudWatchAlarms",
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "cloudwatch.amazonaws.com",
+                },
+                "Action": "sns:Publish",
+                "Resource": SNS_ARN,
+                "Condition": {
+                    "StringEquals": {
+                        "aws:SourceAccount": SNS_ACCOUNT,
+                    },
+                    "ArnEquals": {
+                        "aws:SourceArn": [
+                            f"arn:aws:cloudwatch:{SNS_REGION}:{SNS_ACCOUNT}:alarm:cloud5-infra-dev-{name}"
+                            for name in SNS_ALARM_NAMES
+                        ],
+                    },
+                },
+            },
+        ],
+    }
+
+
+def canonical_policy(value):
+    if isinstance(value, dict):
+        return {
+            key: canonical_policy(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return sorted(
+            (canonical_policy(item) for item in value),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+    return value
+
+
+def verify_sns_topic(address, change, actions, environment):
+    if environment != "dev" or address != SNS_ADDRESS:
+        raise ValueError(f"{address}: invalid SNS scope")
+
+    if "delete" in actions or "create" not in actions:
+        before = change.get("before")
+        if not isinstance(before, dict) or before.get("name") != SNS_NAME:
+            raise ValueError(f"{address}: prior SNS name not verified")
+        if before.get("arn") != SNS_ARN:
+            raise ValueError(f"{address}: prior SNS ARN not verified")
+
+    if "create" not in actions and "update" not in actions:
+        return
+
+    after = change.get("after")
+    metadata = change.get("after_unknown")
+
+    if not isinstance(after, dict) or not isinstance(metadata, dict):
+        raise ValueError(f"{address}: SNS metadata missing")
+
+    for field in ("name", "kms_master_key_id", "policy", "fifo_topic"):
+        if unknown(metadata.get(field)):
+            raise ValueError(f"{address}: SNS security field unknown")
+
+    if after.get("name") != SNS_NAME:
+        raise ValueError(f"{address}: unexpected SNS topic name")
+
+    if after.get("fifo_topic") is not False:
+        raise ValueError(f"{address}: SNS topic must be standard")
+
+    if after.get("kms_master_key_id") != SNS_KMS_ARN:
+        raise ValueError(f"{address}: unapproved KMS key")
+
+    try:
+        policy = json.loads(after.get("policy", ""))
+    except (ValueError, TypeError):
+        raise ValueError(f"{address}: invalid SNS topic policy") from None
+
+    if canonical_policy(policy) != canonical_policy(expected_sns_policy()):
+        raise ValueError(f"{address}: SNS topic policy not approved")
+
+
+def verify_alarm_actions(address, change):
+    after = change.get("after")
+    metadata = change.get("after_unknown")
+
+    if not isinstance(after, dict) or not isinstance(metadata, dict):
+        raise ValueError(f"{address}: alarm metadata missing")
+
+    for field in (
+        "actions_enabled",
+        "alarm_actions",
+        "ok_actions",
+        "insufficient_data_actions",
+    ):
+        if unknown(metadata.get(field)):
+            raise ValueError(f"{address}: alarm action is unknown")
+
+    enabled = after.get("actions_enabled")
+
+    if not isinstance(enabled, bool):
+        raise ValueError(f"{address}: actions_enabled not verified")
+
+    expected = [SNS_ARN] if enabled else []
+
+    for field in ("alarm_actions", "ok_actions"):
+        if field not in after:
+            raise ValueError(f"{address}: alarm action field missing")
+
+        actual = after[field]
+        if actual is None:
+            actual = []
+
+        if actual != expected:
+            raise ValueError(f"{address}: unapproved alarm destination")
+
+    if after.get("insufficient_data_actions") not in (None, []):
+        raise ValueError(f"{address}: unexpected insufficient-data action")
 
 
 def validate_plan(plan, environment, commit, digest, approval=None):
@@ -180,6 +338,15 @@ def validate_plan(plan, environment, commit, digest, approval=None):
                     metadata = change.get("after_unknown")
                     if not isinstance(metadata, dict) or unknown(metadata.get("alarm_name")):
                         raise ValueError(f"{address}: alarm name is unknown")
+
+        if base == SNS_ADDRESS:
+            if resource_type != "aws_sns_topic":
+                raise ValueError(f"{address}: invalid SNS resource type")
+            verify_sns_topic(address, change, actions, environment)
+
+        if base == "module.monitoring.aws_cloudwatch_metric_alarm.this":
+            if "create" in actions or "update" in actions:
+                verify_alarm_actions(address, change)
 
         if ALLOWED.get(base) != resource_type:
             raise ValueError(f"{address}: outside the verified taggable scope")

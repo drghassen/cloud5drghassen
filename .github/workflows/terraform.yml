@@ -150,6 +150,7 @@ jobs:
           set -euo pipefail
           for root in \
             bootstrap \
+            bootstrap/kms-dev-alerts \
             bootstrap/github-terraform-dev-plan \
             bootstrap/github-terraform-dev-apply \
             bootstrap/github-terraform-test-prod-plan \
@@ -162,7 +163,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for module in network security load-balancer compute database storage github-terraform-plan github-terraform-apply; do
+          for module in network security load-balancer compute database storage github-terraform-plan github-terraform-apply notifications; do
             terraform -chdir="modules/$module" init -backend=false -input=false
             terraform -chdir="modules/$module" test
           done
