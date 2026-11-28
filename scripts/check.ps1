@@ -39,7 +39,8 @@ $moduleDirs = @(
     "modules\database",
     "modules\storage",
     "modules\github-terraform-plan",
-    "modules\github-terraform-apply"
+    "modules\github-terraform-apply",
+    "modules\github-terraform-extensions"
 )
 
 foreach ($moduleDir in $moduleDirs) {

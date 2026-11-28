@@ -163,7 +163,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for module in network security load-balancer compute database storage github-terraform-plan github-terraform-apply notifications; do
+          for module in network security load-balancer compute database storage github-terraform-plan github-terraform-apply github-terraform-extensions notifications; do
             terraform -chdir="modules/$module" init -backend=false -input=false
             terraform -chdir="modules/$module" test
           done

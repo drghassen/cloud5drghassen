@@ -17,7 +17,7 @@ for d in bootstrap bootstrap/github-terraform-dev-plan bootstrap/github-terrafor
 done
 
 echo "=== Terraform module tests ==="
-for m in modules/network modules/security modules/load-balancer modules/compute modules/database modules/storage modules/github-terraform-plan modules/github-terraform-apply; do
+for m in modules/network modules/security modules/load-balancer modules/compute modules/database modules/storage modules/github-terraform-plan modules/github-terraform-apply modules/github-terraform-extensions; do
   terraform -chdir="$m" init -backend=false -input=false
   terraform -chdir="$m" test
 done

@@ -56,7 +56,7 @@ variable "owner" {
 variable "vpc_cidr" {
   description = "VPC IPv4 CIDR block."
   type        = string
-  default     = "10.20.0.0/16"
+  default     = "10.30.0.0/16"
 
   validation {
     condition     = can(cidrhost(var.vpc_cidr, 0)) && endswith(var.vpc_cidr, "/16") && cidrsubnet(var.vpc_cidr, 0, 0) == var.vpc_cidr
